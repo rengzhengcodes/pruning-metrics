@@ -85,6 +85,41 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="SageMaker endpoint name (required when provider=sagemaker).",
     )
+    parser.add_argument(
+        "--pruning-level",
+        type=int,
+        default=None,
+        help="Pruning level to route on SageMaker endpoint (required in sagemaker mode).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Deterministic seed for model responses (required in sagemaker mode).",
+    )
+    parser.add_argument(
+        "--sagemaker-region",
+        default=None,
+        help="Optional AWS region override for SageMaker runtime client.",
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=256,
+        help="Maximum generated tokens for remote providers supporting this option.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="Sampling temperature for remote providers supporting this option.",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=1.0,
+        help="Nucleus sampling top-p for remote providers supporting this option.",
+    )
     return parser.parse_args()
 
 
@@ -124,7 +159,19 @@ def build_client(args: argparse.Namespace) -> LLMClient:
             raise ValueError(
                 "--sagemaker-endpoint-name is required with provider=sagemaker"
             )
-        return SageMakerClient(endpoint_name=args.sagemaker_endpoint_name)
+        if args.pruning_level is None:
+            raise ValueError("--pruning-level is required with provider=sagemaker")
+        if args.seed is None:
+            raise ValueError("--seed is required with provider=sagemaker")
+        return SageMakerClient(
+            endpoint_name=args.sagemaker_endpoint_name,
+            pruning_level=args.pruning_level,
+            seed=args.seed,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            region_name=args.sagemaker_region,
+        )
 
     raise ValueError(f"Unsupported provider: {args.provider}")
 

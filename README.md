@@ -52,8 +52,12 @@ python scripts/run_humaneval_plus.py \
 - `--provider mock|bedrock|sagemaker`: selects inference backend.
 - `--bedrock-model-id`: required with `--provider bedrock`.
 - `--sagemaker-endpoint-name`: required with `--provider sagemaker`.
+- `--pruning-level`: required with `--provider sagemaker`.
+- `--seed`: required with `--provider sagemaker`.
 
-Bedrock and SageMaker adapters are intentionally placeholders in this bootstrap and currently raise `NotImplementedError`; this keeps the evaluation stack stable while backend wiring is finalized.
+Bedrock remains a placeholder adapter. SageMaker client invocation is implemented and
+expects an endpoint that returns JSON with `generated_text` and metadata fields such
+as `logits_s3_uri`.
 
 ## Output artifacts
 The runner writes files under `artifacts/humaneval_plus/` by default:

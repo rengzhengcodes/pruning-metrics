@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from pruning_metrics.evals.coding.humaneval_plus_dataset import HumanEvalPlusTask
 from pruning_metrics.evals.coding.llm_client import LLMClient
@@ -30,6 +31,8 @@ class TaskEvaluationRecord:
         Model-generated candidate solution.
     verification:
         Verification metadata from test execution.
+    inference_metadata:
+        Optional provider-specific inference metadata such as seed or logits URI.
 
     Returns
     -------
@@ -49,6 +52,7 @@ class TaskEvaluationRecord:
     prompt: str
     generated_code: str
     verification: VerificationResult
+    inference_metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +159,7 @@ def run_pipeline(
     for task in tasks:
         prompt = build_coding_prompt(task)
         generated_code = llm_client.generate_code(prompt=prompt, task_id=task.task_id)
+        inference_metadata = getattr(llm_client, "last_response_metadata", None)
         verification = verify_task_solution(
             task=task,
             generated_solution=generated_code,
@@ -167,6 +172,7 @@ def run_pipeline(
                 prompt=prompt,
                 generated_code=generated_code,
                 verification=verification,
+                inference_metadata=inference_metadata,
             )
         )
 
