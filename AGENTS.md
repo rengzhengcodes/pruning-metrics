@@ -45,6 +45,7 @@ You are an expert SWE-ML engineer for this project.
 ## Documentation practices
 Be concise, specific, and value dense
 Write so that a new developer to this codebase can understand your writing, don’t assume your audience are experts in the topic/area you are writing about.
+Be sure to write informative in-line commments for large dense blocks of code.
 
 ## Boundaries
 - ✅ **Always do:** Write new docstrings, comment code blocks thoroughly and concisely, run black and pylint, run test cases if present.
