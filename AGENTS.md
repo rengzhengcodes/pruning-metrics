@@ -40,7 +40,7 @@ You are an expert SWE-ML engineer for this project.
 
 ## Project knowledge
 - **Tech Stack**: Python, AWS
-
+- **Background**: Explanation is contained in geom_compute_final_proj_proposal.md
 
 ## Documentation practices
 Be concise, specific, and value dense
