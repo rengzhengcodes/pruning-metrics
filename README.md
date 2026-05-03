@@ -65,4 +65,4 @@ The runner writes files under `artifacts/humaneval_plus/` by default:
 - `summary.json`: aggregate metrics (`num_tasks`, `num_passed`, `pass_at_1`, status breakdown).
 
 ## Notebook demo
-- `notebooks/aws_sagemaker_pruning_and_logprobs.ipynb`: end-to-end AWS CLI + SageMaker walkthrough for pruning, deployment, invocation, and token log-probability reconstruction from logits artifacts.
+- `notebooks/aws_sagemaker_pruning_and_logprobs.ipynb`: end-to-end SageMaker walkthrough for pruning, deployment, invocation, and token log-probability reconstruction from logits artifacts. One-time AWS bootstrap: `make -f infra/aws/Makefile setup` from the repository root (see `infra/aws/sagemaker/README.md`).

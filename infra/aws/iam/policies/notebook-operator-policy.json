@@ -1,0 +1,102 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "STSIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "S3BucketsForPruningArtifactsAndLogits",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:CreateBucket",
+        "s3:HeadBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::__ARTIFACT_BUCKET__",
+        "arn:aws:s3:::__ARTIFACT_BUCKET__/*",
+        "arn:aws:s3:::__LOGITS_BUCKET__",
+        "arn:aws:s3:::__LOGITS_BUCKET__/*"
+      ]
+    },
+    {
+      "Sid": "ECRForBuildAndPush",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ECRRepositoryScoped",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+        "ecr:PutImage",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:CreateRepository",
+        "ecr:DescribeRepositories",
+        "ecr:DescribeImages"
+      ],
+      "Resource": "arn:aws:ecr:__REGION__:__ACCOUNT_ID__:repository/__ECR_REPOSITORY_NAME__"
+    },
+    {
+      "Sid": "SageMakerEndpointLifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "sagemaker:CreateModel",
+        "sagemaker:CreateEndpoint",
+        "sagemaker:CreateEndpointConfig",
+        "sagemaker:UpdateEndpoint",
+        "sagemaker:DescribeEndpoint",
+        "sagemaker:DescribeEndpointConfig",
+        "sagemaker:DescribeModel",
+        "sagemaker:ListEndpoints",
+        "sagemaker:ListEndpointConfigs",
+        "sagemaker:ListModels",
+        "sagemaker:DeleteEndpoint",
+        "sagemaker:DeleteEndpointConfig",
+        "sagemaker:DeleteModel"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SageMakerInvokeRuntime",
+      "Effect": "Allow",
+      "Action": [
+        "sagemaker:InvokeEndpoint"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassRoleToSageMaker",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "__SAGEMAKER_ROLE_ARN__",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "sagemaker.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "IAMReadExecutionRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole"
+      ],
+      "Resource": "__SAGEMAKER_ROLE_ARN__"
+    }
+  ]
+}

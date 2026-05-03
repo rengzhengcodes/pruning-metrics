@@ -4,6 +4,13 @@ This directory contains scripts to prune Qwen2.5-72B at levels
 `0,20,40,60,80`, publish artifacts to S3, deploy a single SageMaker endpoint,
 and invoke that endpoint with per-request seed and pruning level.
 
+## Prerequisites (IAM, S3, ECR)
+
+1. Copy [`template.env`](../../template.env) to `.env` at the repository root and fill in account, region, buckets, `SAGEMAKER_ROLE_ARN`, and `ECR_REPOSITORY_NAME`.
+2. From the repository root, run **`make -f infra/aws/Makefile setup`** to create missing S3 buckets and the ECR repository (if allowed), then verify STS, bucket access, ECR, and IAM role visibility. Individual targets: `verify`, `ensure-s3`, `ensure-ecr`.
+3. Attach IAM policies to your **operator** identity and **SageMaker execution role** as described in [`../iam/README.md`](../iam/README.md). Rendered policy JSON: **`make -f infra/aws/Makefile iam-print`**.
+4. Credential problems (for example `NoCredentials`): see [`../TROUBLESHOOTING.md`](../TROUBLESHOOTING.md).
+
 ## 1) Prune and register model levels
 
 ```bash

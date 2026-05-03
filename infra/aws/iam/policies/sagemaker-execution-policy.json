@@ -1,0 +1,63 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "S3GetArtifactObjects",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::__ARTIFACT_BUCKET__/__ARTIFACT_PREFIX__/*"
+    },
+    {
+      "Sid": "S3ListArtifactPrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::__ARTIFACT_BUCKET__",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "__ARTIFACT_PREFIX__/*",
+            "__ARTIFACT_PREFIX__"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "S3WriteAndReadLogitsObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject"
+      ],
+      "Resource": "arn:aws:s3:::__LOGITS_BUCKET__/__LOGITS_PREFIX__/*"
+    },
+    {
+      "Sid": "ECRPullServingImage",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ECRRepositoryImageLayers",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage"
+      ],
+      "Resource": "arn:aws:ecr:__REGION__:__ACCOUNT_ID__:repository/__ECR_REPOSITORY_NAME__"
+    }
+  ]
+}
