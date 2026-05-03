@@ -63,3 +63,6 @@ as `logits_s3_uri`.
 The runner writes files under `artifacts/humaneval_plus/` by default:
 - `records.jsonl`: one JSON record per task with prompt, generated code, and verification status.
 - `summary.json`: aggregate metrics (`num_tasks`, `num_passed`, `pass_at_1`, status breakdown).
+
+## Notebook demo
+- `notebooks/aws_sagemaker_pruning_and_logprobs.ipynb`: end-to-end AWS CLI + SageMaker walkthrough for pruning, deployment, invocation, and token log-probability reconstruction from logits artifacts.
