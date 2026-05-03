@@ -5,6 +5,36 @@ Two principals need permissions:
 1. **Notebook operator** — the IAM user or role whose credentials run Jupyter, `setup_prerequisites.py`, and `aws` / `docker`. Attach or inline the JSON from [`policies/notebook-operator-policy.json`](policies/notebook-operator-policy.json) after substituting placeholders (or run `make -f infra/aws/Makefile iam-print` with a filled `.env` to print rendered JSON).
 2. **SageMaker execution role** — the role ARN in `SAGEMAKER_ROLE_ARN`. SageMaker assumes this role to pull your container image, read model artifacts from S3, and (via the container) write logits to S3. Attach the JSON from [`policies/sagemaker-execution-policy.json`](policies/sagemaker-execution-policy.json) (rendered the same way).
 
+## SageMaker execution role ARN (`SAGEMAKER_ROLE_ARN`)
+
+You need the **IAM role ARN** (not the SageMaker endpoint ARN). Typical form:
+
+`arn:aws:iam::<account-id>:role/<path-segments>/<role-name>`
+
+**AWS Management Console — IAM**
+
+1. Open **IAM** → **Roles**.
+2. Open the role SageMaker should assume (often named like `AmazonSageMaker-ExecutionRole` or a team-specific execution role).
+3. At the top of the role summary, copy **ARN** into `SAGEMAKER_ROLE_ARN` in `.env`.
+
+If no role exists yet, choose **Create role** → trusted entity **AWS service** → use case **SageMaker** (or pick **SageMaker** under “Use case” so the trust policy allows `sagemaker.amazonaws.com`). After creation, copy the new role’s ARN the same way.
+
+**AWS Management Console — SageMaker**
+
+When creating a **notebook instance** or **domain**, the wizard often offers to **create** or **reuse** an execution role; the summary page or notebook details may show that role name. Look up that role under IAM → Roles and copy its ARN if the UI does not show the full ARN.
+
+**AWS CLI** (replace `<role-name>` with the role’s **Role name** from IAM, which may include a path such as `service-role/MyRole`):
+
+```bash
+aws iam get-role --role-name "<role-name>" --query Role.Arn --output text
+```
+
+To list role names that mention SageMaker (narrow manually if the list is long):
+
+```bash
+aws iam list-roles --query "Roles[?contains(RoleName, 'SageMaker') || contains(RoleName, 'sagemaker')].{Name:RoleName,Arn:Arn}" --output table
+```
+
 ## Trust policy (execution role only)
 
 The execution role must trust the SageMaker service. In the IAM console, edit the role’s **Trust relationships** so `sagemaker.amazonaws.com` can assume the role. Example trust policy:
