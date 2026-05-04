@@ -97,14 +97,18 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="qwen-pruning-") as tmp_dir:
         tmp_root = Path(tmp_dir)
         for level in pruning_levels:
-            level_dir = tmp_root / f"pruning_{level}"
+            # Keep "20" rather than "20.0" in S3 keys when the level is a whole percent.
+            level_label = (
+                str(int(level)) if float(level).is_integer() else str(level)
+            )
+            level_dir = tmp_root / f"pruning_{level_label}"
             model = AutoModelForCausalLM.from_pretrained(
                 args.base_model_id,
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
                 low_cpu_mem_usage=True,
             )
-            if level > 0:
+            if float(level) > 0.0:
                 apply_wanda_pruning(
                     model=model,
                     stats=stats,
@@ -113,7 +117,7 @@ def main() -> None:
             model.save_pretrained(level_dir)
             tokenizer.save_pretrained(level_dir)
 
-            level_prefix = f"{artifact_prefix}/pruning_{level}"
+            level_prefix = f"{artifact_prefix}/pruning_{level_label}"
             upload_directory(
                 s3_client=s3_client,
                 bucket=artifact_bucket,
@@ -121,7 +125,7 @@ def main() -> None:
                 local_dir=level_dir,
             )
             manifest_payload["pruning_levels"][
-                str(level)
+                level_label
             ] = f"s3://{artifact_bucket}/{level_prefix}"
             shutil.rmtree(level_dir)
 

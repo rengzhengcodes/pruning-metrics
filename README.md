@@ -65,4 +65,7 @@ The runner writes files under `artifacts/humaneval_plus/` by default:
 - `summary.json`: aggregate metrics (`num_tasks`, `num_passed`, `pass_at_1`, status breakdown).
 
 ## Notebook demo
-- `notebooks/aws_sagemaker_pruning_and_logprobs.ipynb`: end-to-end SageMaker walkthrough for pruning, deployment, invocation, and token log-probability reconstruction from logits artifacts. One-time AWS bootstrap: `make -f infra/aws/Makefile setup` from the repository root (see `infra/aws/sagemaker/README.md`).
+- `notebooks/aws_sagemaker_pruning_and_logprobs.ipynb`: end-to-end SageMaker walkthrough for pruning, deployment, invocation, and token log-probability reconstruction from logits artifacts. One-time AWS bootstrap: `make -f infra/aws/Makefile setup` from the repository root (see `infra/aws/sagemaker/README.md`). Suitable for **smaller-model** demos that fit on the SageMaker endpoint quota of the target account.
+
+## Qwen2-72B EC2 GPU experiment
+For the actual Qwen2-72B WANDA prune + HumanEval+ + teacher-forced log-probs run, the SageMaker-endpoint workflow is bypassed: GPU-endpoint quota for the instance types large enough to host a 72 B model is `0` in this account. Instead, a single EC2 spot GPU instance (p5.48xlarge / p4d.24xlarge) does pruning, evaluation, and teacher-forced scoring in one process. See `infra/ec2/README.md` for the full runbook.

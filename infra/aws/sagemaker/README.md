@@ -1,6 +1,13 @@
 # SageMaker Qwen pruning workflow
 
-This directory contains scripts to prune Qwen2.5-72B at levels
+> **Note (May 2026):** this SageMaker-endpoint path is preserved for
+> smaller-model demos and reference. The actual Qwen2-72B run uses the
+> direct EC2 GPU-spot pipeline at [`../../ec2/`](../../ec2/) because
+> SageMaker GPU-endpoint quota for instance types large enough to host
+> a 72 B-parameter model is `0` in the target account. Raising the
+> quota requires an AWS support case.
+
+This directory contains scripts to prune Qwen2-72B at levels
 `0,20,40,60,80`, publish artifacts to S3, deploy a single SageMaker endpoint,
 and invoke that endpoint with per-request seed and pruning level.
 
@@ -15,7 +22,7 @@ and invoke that endpoint with per-request seed and pruning level.
 
 ```bash
 python infra/aws/sagemaker/prune_and_register.py \
-  --base-model-id Qwen/Qwen2.5-72B \
+  --base-model-id Qwen/Qwen2-72B \
   --calibration-source humanevalplus_prompts \
   --artifact-bucket <artifact-bucket> \
   --artifact-prefix qwen-pruning \

@@ -65,27 +65,53 @@ class SageMakerInfraConfig:
         )
 
 
-def parse_pruning_levels(raw_levels: str | None) -> list[int]:
+def parse_pruning_levels(raw_levels: str | None) -> list[float]:
     """Parse comma-separated pruning levels string.
+
+    Accepts integer- or float-formatted percentages (e.g. ``"0,20,40,60,80"`` or
+    ``"0.0,20.0,40.0,60.0,80.0"``). Returned values are sorted floats so callers
+    can compute fractional sparsities without re-parsing.
 
     Parameters
     ----------
     raw_levels:
-        Comma-separated levels (for example ``0,20,40,60,80``). ``None`` maps to
-        default levels.
+        Comma-separated levels (for example ``0,20,40,60,80`` or
+        ``0.0,20.0,40.0,60.0,80.0``). ``None`` maps to default levels.
 
     Returns
     -------
-    list[int]
-        Parsed and sorted pruning levels.
+    list[float]
+        Parsed and sorted pruning levels in percent units.
+
+    Preconditions
+    -------------
+    Each non-empty token must parse as a finite float in ``[0, 100)``.
+
+    Postconditions
+    --------------
+    Output is sorted in ascending order with duplicates removed.
     """
 
     if raw_levels is None:
-        return list(DEFAULT_PRUNING_LEVELS)
+        return [float(level) for level in DEFAULT_PRUNING_LEVELS]
 
-    parsed = sorted(
-        {int(part.strip()) for part in raw_levels.split(",") if part.strip()}
-    )
-    if not parsed:
+    parsed_set: set[float] = set()
+    for part in raw_levels.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            value = float(token)
+        except ValueError as exc:
+            raise ValueError(
+                f"Cannot parse pruning level token {token!r} as float."
+            ) from exc
+        if not 0.0 <= value < 100.0:
+            raise ValueError(
+                f"Pruning level {value} must be in [0, 100) percent."
+            )
+        parsed_set.add(value)
+
+    if not parsed_set:
         raise ValueError("At least one pruning level must be provided.")
-    return parsed
+    return sorted(parsed_set)
