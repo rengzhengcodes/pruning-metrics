@@ -565,6 +565,10 @@ def build_notebook_03() -> None:
                 "GENERATION_SEED": GENERATION_SEED,
             }, indent=2))
             assert PRUNING_ARTIFACT_URI.startswith("s3://"), "Set PRUNING_ARTIFACT_URI."
+            assert "<" not in PRUNING_ARTIFACT_URI and ">" not in PRUNING_ARTIFACT_URI, (
+                "PRUNING_ARTIFACT_URI must be the real URI from notebook 2, not a "
+                "placeholder (remove <run_id> and use the printed timestamp id)."
+            )
             """
         ),
         _md(
@@ -626,10 +630,14 @@ def build_notebook_03() -> None:
             """
             ## Poll until the run finishes
 
-            The runner uploads `summary.json` to S3 every time it completes a
-            level, so we can watch progress live. We poll until the
-            instance terminates (or shuts down post-run) before pulling the
-            final artifacts.
+            The runner uploads `summary.json` after **each** completed pruning
+            level. If the job exits before level 0 finishes (bad
+            `PRUNING_ARTIFACT_URI`, OOM, etc.), that file never appears and the
+            next cell will time out with a hint to inspect `_logs/userdata.log`
+            under this run prefix.
+
+            We poll until the instance terminates (or shuts down post-run),
+            then wait for `summary.json` before reading metrics.
             """
         ),
         _code(
@@ -662,8 +670,9 @@ def build_notebook_03() -> None:
             """
             ## Pull and display the per-level metrics
 
-            Reads `summary.json` and the per-level `eval_records.jsonl` for an
-            inline pandas + matplotlib summary.
+            Waits for `summary.json` (the runner creates it after the first
+            level completes), then reads the per-level aggregates for pandas +
+            matplotlib.
             """
         ),
         _code(
@@ -671,12 +680,34 @@ def build_notebook_03() -> None:
             import boto3
             import pandas as pd
 
+            from pruning_metrics.notebook_helpers import list_results, wait_for_artifact
+
             session = boto3.session.Session(profile_name=AWS_PROFILE)
             s3 = session.client("s3")
             prefix = f"freeform_eval/{launched.run_id}"
+            summary_key = f"{prefix}/summary.json"
+
+            print("Waiting for", summary_key, "...")
+            try:
+                wait_for_artifact(
+                    RESULTS_BUCKET,
+                    summary_key,
+                    aws_profile=AWS_PROFILE,
+                    poll_seconds=15.0,
+                    timeout_seconds=60 * 60 * 6,
+                )
+            except TimeoutError:
+                print(
+                    "Timed out: no summary.json. Common causes: invalid "
+                    "PRUNING_ARTIFACT_URI (404 on manifest), model OOM, or the "
+                    "runner crashed before finishing level 0. Objects under prefix:"
+                )
+                for entry in list_results(RESULTS_BUCKET, prefix, aws_profile=AWS_PROFILE):
+                    print(f"  {entry['key']}")
+                raise
 
             summary = json.loads(
-                s3.get_object(Bucket=RESULTS_BUCKET, Key=f"{prefix}/summary.json")["Body"].read()
+                s3.get_object(Bucket=RESULTS_BUCKET, Key=summary_key)["Body"].read()
             )
             print("Calibration dataset :", summary.get("calibration_dataset_spec"))
             print("Eval dataset        :", summary.get("eval_dataset_spec"))
@@ -701,14 +732,18 @@ def build_notebook_03() -> None:
             import matplotlib.pyplot as plt
 
             fig, ax = plt.subplots(figsize=(6, 4))
-            ax.plot(df["pruning_level"], df["pass_at_1"], "o-", linewidth=2)
+            if df.empty:
+                ax.text(0.5, 0.5, "No levels in summary.json", ha="center", va="center")
+            else:
+                ax.plot(df["pruning_level"], df["pass_at_1"], "o-", linewidth=2)
+                ymax = max(0.05, float(df["pass_at_1"].max()) * 1.1)
+                ax.set_ylim(0.0, ymax)
             ax.set_xlabel("Pruning level (% sparsity)")
             ax.set_ylabel("pass@1 (or accuracy for math/MCQ)")
             ax.set_title(
                 f"{summary.get('base_model_id', '?')}\\n{summary.get('eval_dataset_spec', '?')}"
             )
             ax.grid(True, alpha=0.3)
-            ax.set_ylim(0.0, max(0.05, df["pass_at_1"].max() * 1.1))
             fig.tight_layout()
             fig
             """
@@ -724,10 +759,18 @@ def build_notebook_03() -> None:
         ),
         _code(
             """
+            from botocore.exceptions import ClientError
+
             inspect_level = EVAL_LEVELS[0]
             level_label = str(int(inspect_level)) if float(inspect_level).is_integer() else str(inspect_level)
             jsonl_key = f"{prefix}/level={level_label}/eval_records.jsonl"
-            body = s3.get_object(Bucket=RESULTS_BUCKET, Key=jsonl_key)["Body"].read().decode("utf-8")
+            try:
+                body = s3.get_object(Bucket=RESULTS_BUCKET, Key=jsonl_key)["Body"].read().decode("utf-8")
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
+                    print(f"Missing {jsonl_key!r} (level may not have completed or label differs).")
+                    raise
+                raise
             records = [json.loads(line) for line in body.strip().splitlines()]
             print(f"Loaded {len(records)} records at level {level_label}.")
             print("First record (truncated):")
@@ -828,6 +871,10 @@ def build_notebook_04() -> None:
                 "TF_TOP_K": TF_TOP_K,
             }, indent=2))
             assert PRUNING_ARTIFACT_URI.startswith("s3://"), "Set PRUNING_ARTIFACT_URI."
+            assert "<" not in PRUNING_ARTIFACT_URI and ">" not in PRUNING_ARTIFACT_URI, (
+                "PRUNING_ARTIFACT_URI must be the real URI from notebook 2, not a "
+                "placeholder (remove <run_id> and use the printed timestamp id)."
+            )
             """
         ),
         _md(
@@ -886,6 +933,10 @@ def build_notebook_04() -> None:
         _md(
             """
             ## Wait for the run to terminate
+
+            `summary.json` is written after the first pruning level completes. If
+            the runner crashes before that (bad artifact URI, OOM, etc.), the
+            next cell will time out and list objects under this run prefix.
             """
         ),
         _code(
@@ -916,6 +967,9 @@ def build_notebook_04() -> None:
         _md(
             """
             ## Per-level summary table
+
+            Waits for `summary.json` before loading it (avoids S3 `NoSuchKey`
+            if you run this cell before the first level finishes uploading).
             """
         ),
         _code(
@@ -923,12 +977,33 @@ def build_notebook_04() -> None:
             import boto3
             import pandas as pd
 
+            from pruning_metrics.notebook_helpers import list_results, wait_for_artifact
+
             session = boto3.session.Session(profile_name=AWS_PROFILE)
             s3 = session.client("s3")
             prefix = f"teacher_forced/{launched.run_id}"
+            summary_key = f"{prefix}/summary.json"
+
+            print("Waiting for", summary_key, "...")
+            try:
+                wait_for_artifact(
+                    RESULTS_BUCKET,
+                    summary_key,
+                    aws_profile=AWS_PROFILE,
+                    poll_seconds=15.0,
+                    timeout_seconds=60 * 60 * 4,
+                )
+            except TimeoutError:
+                print(
+                    "Timed out: no summary.json. Check PRUNING_ARTIFACT_URI and "
+                    "`_logs/userdata.log` under this prefix:"
+                )
+                for entry in list_results(RESULTS_BUCKET, prefix, aws_profile=AWS_PROFILE):
+                    print(f"  {entry['key']}")
+                raise
 
             summary = json.loads(
-                s3.get_object(Bucket=RESULTS_BUCKET, Key=f"{prefix}/summary.json")["Body"].read()
+                s3.get_object(Bucket=RESULTS_BUCKET, Key=summary_key)["Body"].read()
             )
             print("Eval dataset:", summary.get("eval_dataset_spec"))
             print("Base model  :", summary.get("base_model_id"))
@@ -953,17 +1028,20 @@ def build_notebook_04() -> None:
             import matplotlib.pyplot as plt
 
             fig, ax = plt.subplots(figsize=(6, 4))
-            for task_id, group in df.groupby("task_id"):
-                ax.plot(
-                    group["pruning_level"],
-                    group["average_logprob"],
-                    "o-",
-                    label=task_id,
-                )
+            if df.empty:
+                ax.text(0.5, 0.5, "No rows in summary.json", ha="center", va="center")
+            else:
+                for task_id, group in df.groupby("task_id"):
+                    ax.plot(
+                        group["pruning_level"],
+                        group["average_logprob"],
+                        "o-",
+                        label=task_id,
+                    )
+                ax.legend(fontsize="small")
             ax.set_xlabel("Pruning level (% sparsity)")
             ax.set_ylabel("Average log-probability of gold answer")
             ax.set_title("Teacher-forced confidence vs. sparsity")
-            ax.legend(fontsize="small")
             ax.grid(True, alpha=0.3)
             fig.tight_layout()
             fig
