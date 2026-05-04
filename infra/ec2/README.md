@@ -1,36 +1,49 @@
-# Qwen2-72B WANDA pruning on EC2 — operator runbook
+# EC2 spot GPU pipeline -- operator runbook
 
-This directory holds the end-to-end pipeline for the
-**Qwen2-72B WANDA prune + HumanEval+ + teacher-forced log-probs** experiment.
-The notebook-targeted SageMaker-endpoint workflow at
-[`../aws/sagemaker/`](../aws/sagemaker/) cannot host a 72 B-parameter model in
-this account (the relevant endpoint quotas are `0`); the EC2 spot-GPU path
-documented here is the way the actual run executes.
+This directory holds the GPU-side machinery for the four-notebook pruning
+workflow. Each of notebooks
+[`02_prune_llm.ipynb`](../../notebooks/02_prune_llm.ipynb),
+[`03_freeform_eval.ipynb`](../../notebooks/03_freeform_eval.ipynb), and
+[`04_teacher_forced.ipynb`](../../notebooks/04_teacher_forced.ipynb)
+launches one of the runner scripts here on a spot EC2 instance, polls
+S3 for results, and self-terminates the box when the job is done.
 
-The pipeline does everything inside **one** GPU process so the model is
-materialized exactly once: prune → autoregressive HumanEval+ eval → teacher-
-forced log-probs, repeated for each pruning level. Per-level artifacts are
-written to S3 incrementally so a spot interruption never loses a completed
-level.
+If you have not yet read it, start with
+[`docs/getting_started.md`](../../docs/getting_started.md) and
+[`docs/architecture.md`](../../docs/architecture.md). The notebooks
+themselves are the primary interface; this runbook covers the operator-
+side concerns: capacity probing, monitoring, debugging, recovery.
 
-## Files
+## Files in this directory
 
-| File | Purpose |
-|------|---------|
-| [`run_qwen_pruning_experiment.py`](run_qwen_pruning_experiment.py) | Single-GPU-box runner. Loads Qwen2-72B once, sweeps pruning levels, writes per-level results + a final `summary.json`. |
-| [`find_capacity.py`](find_capacity.py) | Probes EC2 spot price + availability across regions/AZs for `p5.48xlarge` / `p4de.24xlarge` / `p4d.24xlarge` and prints viable candidates as JSON. |
-| [`launch_gpu_instance.py`](launch_gpu_instance.py) | Tars the repo to S3, resolves the latest Deep Learning AMI, and calls `RunInstances` with the instance profile + spot market + user-data bootstrap. |
-| [`userdata_bootstrap.sh`](userdata_bootstrap.sh) | Cloud-init script the launcher renders and attaches as user-data. Pulls the tarball, installs deps, runs the experiment, syncs results to S3, and self-shuts. |
+| File | What it does |
+|------|--------------|
+| [`find_capacity.py`](find_capacity.py) | Scans `describe_spot_price_history` + `describe_instance_type_offerings` across regions/AZs for `p5.48xlarge`, `p4de.24xlarge`, `p4d.24xlarge` (or any user-supplied list) and prints the cheapest currently-fulfillable candidates as JSON. The notebooks call this through `pruning_metrics.notebook_helpers.find_capacity`. |
+| [`launch_gpu_instance.py`](launch_gpu_instance.py) | Tars the repo (excluding `.env`, `.git`, `.venv`, caches), uploads to S3, resolves the latest Deep Learning AMI via SSM Parameter Store, renders [`userdata_bootstrap.sh`](userdata_bootstrap.sh) with the chosen runner + runner-env, and calls `RunInstances` with the `pruning-metrics-ec2` instance profile + spot market + 1500 GiB gp3 root. |
+| [`userdata_bootstrap.sh`](userdata_bootstrap.sh) | Cloud-init script. Probes DLAMI conda envs for a python with `torch` pre-installed (falls back to system pip if none), pulls the repo tarball from S3, exports runner-specific env vars, runs the chosen runner, and on exit (success, failure, or spot interruption) syncs results to S3 and shuts down. |
+| [`_runner_common.py`](_runner_common.py) | Shared helpers reused by all three runners: per-row WANDA pruning, snapshot/restore of `nn.Linear` weights to host RAM, S3 sync / download, model loading. The S3 helpers do not import `torch` so the launcher can use them without a GPU env. |
+| [`run_pruning_calibration.py`](run_pruning_calibration.py) | Notebook 2's worker. Loads model once -> WANDA stats over the train split of the chosen calibration dataset -> uploads `wanda_stats.pt` + `manifest.json` + `split.json` + `run_metadata.json`. Fast (~5-25 min). |
+| [`run_freeform_eval.py`](run_freeform_eval.py) | Notebook 3's worker. Downloads the calibration artifact, loads the base model, and per requested pruning level: restore -> apply per-row WANDA -> generate the test split greedily -> task-adapter `verify` -> incremental S3 sync of `level=NN/eval_records.jsonl` and a rolling `summary.json`. |
+| [`run_teacher_forced.py`](run_teacher_forced.py) | Notebook 4's worker. Same artifact + adapter + level sweep, but instead of free-form generation it runs `compute_teacher_forced_logprobs` for `NUM_TF_SAMPLES` records picked deterministically using `TF_SEED`. Outputs `level=NN/sample=KKK_task=.../per_token.json`. |
+| [`run_qwen_pruning_experiment.py`](run_qwen_pruning_experiment.py) | Legacy monolithic runner from the first iteration. Kept available as `--runner full_pipeline` for back-compat; the four-notebook flow does not use it. |
 
-The reusable WANDA + teacher-forcing code lives under
-[`src/pruning_metrics/evals/coding/`](../../src/pruning_metrics/evals/coding/);
-the EC2 runner imports it via `PYTHONPATH` injection so it works without
-`pip install -e .`.
+The launcher's user-data renders the chosen runner via:
 
-## One-time prerequisites
+```bash
+python infra/ec2/launch_gpu_instance.py \
+    --runner {pruning_calibration|freeform_eval|teacher_forced|full_pipeline} \
+    --runner-env-json '{"BASE_MODEL_ID": "...", "PRUNING_LEVELS": "0,20,40,60,80", ...}'
+```
 
-These are already done for the current experiment but listed for
-reproducibility / a fresh account.
+The notebooks build the right `runner_env` dict and call `launch_runner`
+in [`pruning_metrics.notebook_helpers`](../../src/pruning_metrics/notebook_helpers.py),
+so most users never call this CLI directly.
+
+## One-time AWS bootstrap
+
+Notebook 1 (`01_setup_aws.ipynb`) calls
+[`infra/aws/setup/bootstrap_ec2_resources.py`](../aws/setup/bootstrap_ec2_resources.py).
+For a fresh account / region you can also run it from the command line:
 
 ```bash
 AWS_PROFILE=rengz python3 infra/aws/setup/bootstrap_ec2_resources.py \
@@ -39,71 +52,41 @@ AWS_PROFILE=rengz python3 infra/aws/setup/bootstrap_ec2_resources.py \
     --role-name pruning-metrics-ec2
 ```
 
-This creates:
+That creates a versioned + public-access-blocked S3 bucket, an IAM role
+trusted by EC2 with scoped S3 + SSM Session Manager + CloudWatch agent
+permissions, and the matching IAM instance profile. It is idempotent.
 
-* an S3 bucket with versioning + public-access-block (`pruning-metrics-results-414266451290`);
-* an IAM role + instance profile `pruning-metrics-ec2` trusted by EC2 with:
-    * inline `ResultsBucketAccess` (S3 read/write to the bucket only),
-    * managed `AmazonSSMManagedInstanceCore` (so SSM Session Manager works
-      without an SSH key pair),
-    * managed `CloudWatchAgentServerPolicy` (for future CloudWatch logs).
+## Manually launching a runner (debug only)
 
-Re-running the script is a no-op for existing resources.
-
-## Running the experiment
-
-### 1. Find capacity
+The notebooks are the recommended interface, but for debugging you can
+shell out directly:
 
 ```bash
-AWS_PROFILE=rengz python3 infra/ec2/find_capacity.py \
-    --regions us-east-1,us-west-2,us-east-2 \
-    --instance-types p5.48xlarge,p4de.24xlarge,p4d.24xlarge
-```
+# Find capacity:
+AWS_PROFILE=rengz python3 infra/ec2/find_capacity.py
 
-Top candidate (lowest priority index, then lowest spot price) is what you want.
-Spot for `p5.48xlarge` in `us-east-1b` was ~$12.66/hr at the time of writing.
-
-### 2. Launch the spot box
-
-```bash
+# Launch the calibration runner with Qwen2-1.5B-Instruct on a g5.xlarge:
 AWS_PROFILE=rengz python3 infra/ec2/launch_gpu_instance.py \
-    --region us-east-1 \
-    --availability-zone us-east-1b \
-    --instance-type p5.48xlarge \
-    --max-spot-price 31.65 \
-    --results-bucket pruning-metrics-results-414266451290
+    --region us-east-1 --availability-zone us-east-1b \
+    --instance-type g5.xlarge --max-spot-price 1.50 \
+    --results-bucket pruning-metrics-results-414266451290 \
+    --results-prefix pruning_artifacts \
+    --runner pruning_calibration \
+    --runner-env BASE_MODEL_ID=Qwen/Qwen2-1.5B-Instruct \
+    --runner-env "PRUNING_LEVELS=0,50" \
+    --runner-env CALIBRATION_DATASET_SPEC=coding \
+    --runner-env MAX_CALIBRATION_SAMPLES=8 \
+    --runner-env MAX_CALIBRATION_TOKENS=256 \
+    --root-volume-gib 200
 ```
 
-The launcher:
+`--dry-run` skips `RunInstances` (still uploads tarball + writes
+`infra/ec2/_last_userdata.sh` for inspection).
 
-1. Tars the repository (excluding `.git`, `.venv`, `.env`, caches) and uploads
-   it to `s3://<bucket>/<prefix>/<run_id>/code/repo.tar.gz`.
-2. Resolves the latest **Deep Learning OSS Nvidia Driver GPU PyTorch** AMI
-   via SSM Parameter Store (Ubuntu 24.04 / PyTorch 2.10 first, with older
-   Ubuntu 22.04 fallbacks).
-3. Calls `RunInstances` with:
-    * the `pruning-metrics-ec2` instance profile attached,
-    * a 1.5 TiB gp3 root volume (Qwen2-72B is ~145 GiB; we need slack for HF
-      cache, the WANDA snapshot on disk, and per-level outputs),
-    * `InstanceMarketOptions=spot`, `MaxPrice=<bid>`, `one-time`,
-    * `InstanceInitiatedShutdownBehavior=terminate` (so the
-      `shutdown -h now` at end-of-run frees the spot reservation),
-    * the rendered `userdata_bootstrap.sh` as cloud-init user-data.
-4. Waits until `running` and prints the launch plan + instance metadata
-   (instance id, IPs, run id, S3 results path).
+## Monitoring a running job
 
-Use `--dry-run` for a no-network smoke test that builds the tarball, resolves
-the AMI, renders the user-data into `infra/ec2/_last_userdata.sh`, and exits
-without calling `RunInstances`.
-
-If `RunInstances` fails due to spot capacity, re-run with the next candidate
-from step 1. The included subagent automation walks the candidate list
-automatically with retry.
-
-### 3. Monitor
-
-The instance has no SSH key by default; access it via **SSM Session
-Manager** (the role grants `AmazonSSMManagedInstanceCore`):
+The instance has no SSH key by default; access it via
+**SSM Session Manager** (the role grants `AmazonSSMManagedInstanceCore`):
 
 ```bash
 AWS_PROFILE=rengz aws ssm start-session \
@@ -118,88 +101,72 @@ sudo nvidia-smi
 ls /opt/results
 ```
 
-Without an SSM session, watch the run progress directly through S3:
+Without an SSM session, watch progress through S3:
 
 ```bash
 AWS_PROFILE=rengz aws s3 ls --recursive --human-readable \
-    s3://pruning-metrics-results-414266451290/qwen2_72b_pruning/<run-id>/
+    s3://pruning-metrics-results-414266451290/<runner-prefix>/<run-id>/
 ```
 
-Each completed pruning level adds:
+The runner uploads incrementally per level, so you can stream progress
+as completed levels appear.
 
-* `pruning_level=NN/eval_records.jsonl`  — per-task HumanEval+ verifications
-  (autoregressive, **no** teacher forcing)
-* `pruning_level=NN/teacher_forced.json` — per-token next-token log-probs for
-  the seeded `(prompt, canonical_solution)` pair
-* an updated `summary.json` at the run root
+## Spot-interruption recovery
 
-When the run finishes (or a spot interruption fires), the EC2 box runs
-`aws s3 sync` one more time and `shutdown -h now`. The instance terminates
-itself; you do not need to clean it up.
+The user-data script polls `http://169.254.169.254/latest/meta-data/spot/instance-action`
+in a background loop and runs an immediate `aws s3 sync` of `/opt/results`
+when AWS announces an interruption. Completed levels are intact in S3;
+the in-progress level may be missing or partial.
 
-## Cost & wall-clock estimates
+To resume, re-launch the same runner with the same `--run-id`. The
+runners are not yet level-skipping, so they re-run all requested levels;
+this is intentionally simple and rare in practice (sub-1% of spot runs
+in our testing).
 
-* `p5.48xlarge` spot: ~$12.7/hr in `us-east-1b` (Apr 2026 prices).
-* `p4d.24xlarge` spot: ~$10–14/hr depending on AZ — adequate for Qwen2-72B
-  in bf16 (320 GiB total GPU memory across 8 A100s).
-* Expected runtime end-to-end: roughly **2–4 hours** on `p5.48xlarge` for
-  Qwen2-72B with the default split: model download (~10–15 min on cold
-  cache), WANDA stats over 131 train prompts (~10–30 min), 5 levels × (weight
-  restore ~3 min + prune ~1 min + 33-task eval ~10–15 min + TF scoring
-  ~10 sec). Expect 4–8 hours on `p4d.24xlarge` due to slower interconnect.
+## Cost & wall-clock reference (May 2026 prices)
 
-## What gets recorded under the run prefix
+| Phase | Box | Wall clock (Qwen2-72B) | Wall clock (Qwen2-1.5B-Instruct) | Spot rate |
+|------:|-----|-----------------------:|---------------------------------:|----------:|
+| `pruning_calibration` (notebook 2) | `p4de.24xlarge` (72B) / `g5.xlarge` (1.5B) | ~25 min | ~6 min | $13/hr / $0.6/hr |
+| `freeform_eval` (notebook 3) | same | ~30 min for 33 tasks x 5 levels | ~7 min | same |
+| `teacher_forced` (notebook 4) | same | ~5 min for 1 sample x 5 levels | ~5 min | same |
+
+The full Qwen2-72B sweep across all three notebooks is ~$25 of GPU time.
+A small-model smoke pass through all three notebooks is well under $0.50.
+
+## Output layout
 
 ```
-s3://pruning-metrics-results-414266451290/qwen2_72b_pruning/<run-id>/
-├── code/repo.tar.gz                            # snapshot of the repo at launch time
-├── run_metadata.json                            # host, run id, model id, seed, ...
-├── split.json                                   # full train/test partition (audit)
-├── summary.json                                 # per-level metrics aggregated
-├── pruning_level=0/eval_records.jsonl
-├── pruning_level=0/teacher_forced.json
-├── pruning_level=20/...
-├── pruning_level=40/...
-├── pruning_level=60/...
-├── pruning_level=80/...
-└── _logs/userdata.log                           # bootstrap stdout/stderr
+s3://<bucket>/pruning_artifacts/<run_id>/
+├── code/repo.tar.gz
+├── _logs/userdata.log
+├── run_metadata.json
+├── manifest.json
+├── split.json
+└── wanda_stats.pt
+
+s3://<bucket>/freeform_eval/<run_id>/
+├── code/repo.tar.gz
+├── _logs/userdata.log
+├── _artifact/{manifest.json, wanda_stats.pt}   # pulled from the calibration artifact
+├── run_metadata.json
+├── summary.json
+├── level=0/eval_records.jsonl
+├── level=20/eval_records.jsonl
+└── ...
+
+s3://<bucket>/teacher_forced/<run_id>/
+├── code/repo.tar.gz
+├── _logs/userdata.log
+├── _artifact/{manifest.json, wanda_stats.pt}
+├── run_metadata.json
+├── summary.json
+├── sample_selection.json
+├── level=0/sample=000_task=HumanEval_137/per_token.json
+├── level=20/sample=000_task=HumanEval_137/per_token.json
+└── ...
 ```
 
-`split.json` records the seed, train fraction, and full ordered task-id lists
-for both partitions. The deterministic 80/20 split (seed `65320`) shipped
-with this repo is the canonical one for the experiment.
-
-## Recovering from spot interruption
-
-The user-data script also polls the EC2 instance metadata service for the
-[spot interruption notice](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-interruptions.html)
-and runs `aws s3 sync` immediately when one is announced. If a level was in
-progress when interruption fired, that level's `eval_records.jsonl` /
-`teacher_forced.json` may be missing or partial; previously-completed levels
-are intact in S3.
-
-To resume, re-launch with `--run-id <same-id>` (the current runner re-runs
-**all** levels — a future enhancement is to skip levels whose
-`teacher_forced.json` is already present in S3).
-
-## Pruning the SageMaker-endpoint legacy
-
-The `infra/aws/sagemaker/` workflow remains in the repo for smaller-model
-demonstrations and as a reference of the originally-intended hosting path,
-but it is **not** used for the Qwen2-72B run. SageMaker GPU-endpoint quota in
-this account (`ml.g5.48xlarge`, `ml.p4d.24xlarge`, `ml.p5.48xlarge`, …) is
-`0`; raising it requires an AWS support case.
-
-## Quick reference: model name, split seed, teacher-forced pair
-
-| Item | Value |
-|------|-------|
-| Base model | `Qwen/Qwen2-72B` |
-| Pruning levels | `0, 20, 40, 60, 80` (percent layer-wise WANDA) |
-| HumanEval+ split seed | `65320` |
-| Train fraction | `0.8` |
-| Teacher-forcing pair selector | `sorted(test_tasks, key=task_id)[seed % len(test)]` |
-
-The seeded `(prompt, canonical_solution)` pair is identical for every
-pruning level so the per-token probabilities are directly comparable across
-sparsity levels.
+`per_token.json` files contain the full ground-truth log-probability and
+top-`TF_TOP_K` alternatives for every answer position; the notebooks
+render them as a per-token DataFrame for inline review.

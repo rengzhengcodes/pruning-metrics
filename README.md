@@ -1,71 +1,98 @@
 # pruning-metrics
-Making a metric space on pruning scenarios.
 
-## HumanEval+ bootstrap
-This repository now includes a bootstrap coding-evaluation pipeline that:
-- loads tasks from `evalplus/humanevalplus`,
-- sends prompts to a pluggable LLM interface (mock, Bedrock placeholder, SageMaker placeholder),
-- verifies model outputs with the HumanEval+ test harness.
+Tooling for studying how pruning a large language model degrades its
+behaviour, framed as a metric space over pruning scenarios. The project
+turns "prune at X% sparsity, evaluate" into a reproducible, seeded,
+notebook-driven workflow that runs on EC2 spot GPUs and persists every
+artifact to S3.
 
-The HumanEval+ dataset is sourced from Hugging Face:
-- https://huggingface.co/datasets/evalplus/humanevalplus
+## What's in here
 
-## Project structure
-- `src/pruning_metrics/evals/coding/humaneval_plus_dataset.py`: dataset loader and task schema.
-- `src/pruning_metrics/evals/coding/llm_client.py`: provider-agnostic LLM client interface.
-- `src/pruning_metrics/evals/coding/verifier.py`: subprocess-based correctness verifier.
-- `src/pruning_metrics/evals/coding/pipeline.py`: end-to-end prompt/generate/verify orchestration.
-- `scripts/run_humaneval_plus.py`: CLI runner.
-- `tests/evals/coding/`: dataset, verifier, and pipeline smoke tests.
+* **Four orchestration notebooks** in [`notebooks/`](notebooks/) that
+  run the experiment end-to-end without writing any boto3 / argparse
+  scaffolding yourself:
 
-## Installation
+  | Notebook | Purpose |
+  |----------|---------|
+  | [`01_setup_aws.ipynb`](notebooks/01_setup_aws.ipynb) | One-time idempotent AWS bootstrap (S3 bucket + IAM role + instance profile). |
+  | [`02_prune_llm.ipynb`](notebooks/02_prune_llm.ipynb) | Compute and upload WANDA calibration stats for any HF causal LM and any task adapter. |
+  | [`03_freeform_eval.ipynb`](notebooks/03_freeform_eval.ipynb) | Free-form (no teacher forcing) per-pruning-level evaluation on a chosen test set. |
+  | [`04_teacher_forced.ipynb`](notebooks/04_teacher_forced.ipynb) | Teacher-forced next-token log-probabilities for seeded test samples per pruning level. |
+
+* **Pluggable task adapters** under
+  [`src/pruning_metrics/evals/tasks/`](src/pruning_metrics/evals/tasks/)
+  for HumanEval+ (coding subprocess pass@1), GSM8K (numeric-answer math),
+  and ARC-Challenge (regex letter MCQ). Adding a new task is one file +
+  one registry entry; see [`docs/tasks.md`](docs/tasks.md).
+
+* **EC2 spot GPU runners** under [`infra/ec2/`](infra/ec2/): a tarball
+  launcher, a runner-agnostic user-data bootstrap, three narrow runner
+  scripts, and shared WANDA / S3 helpers. Each runner runs unattended on
+  an EC2 box and self-terminates when finished.
+
+* **Legacy SageMaker reference** in
+  [`infra/aws/sagemaker/`](infra/aws/sagemaker/) and
+  [`notebooks/aws_sagemaker_pruning_and_logprobs.ipynb`](notebooks/aws_sagemaker_pruning_and_logprobs.ipynb).
+  Kept for small-model demos; not used for the canonical Qwen2-72B run
+  because SageMaker GPU endpoint quotas are too low.
+
+## Documentation entry points
+
+* **[`docs/getting_started.md`](docs/getting_started.md)** -- run your
+  first sweep in 30-60 minutes (small or large model).
+* **[`docs/architecture.md`](docs/architecture.md)** -- system overview
+  with diagrams, repo layout, determinism contract, cost reference.
+* **[`docs/tasks.md`](docs/tasks.md)** -- how to add a new task type.
+* **[`infra/ec2/README.md`](infra/ec2/README.md)** -- operator runbook
+  (capacity probes, SSM Session Manager, spot interruption recovery).
+
+## Quickstart
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+# 1. install
+python -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
+python -m pip install nbformat ipykernel matplotlib pandas
+
+# 2. configure
+cp template.env .env
+$EDITOR .env  # AWS_PROFILE, AWS_ACCOUNT_ID, RESULTS_BUCKET, BASE_MODEL_ID
+
+# 3. run notebooks 1 -> 4 in order
+jupyter lab notebooks/
 ```
 
-## Run a 3-task smoke evaluation
-By default, the runner uses the mock client.
+The workstation does not need a GPU or `torch`. Every GPU operation runs
+on a spot EC2 instance launched by the notebooks.
+
+## Canonical reference run
+
+A successful Qwen2-72B sweep is preserved at:
+
+```
+s3://pruning-metrics-results-414266451290/qwen2_72b_pruning/20260504T001802Z-f041ba/
+```
+
+With pass@1 by sparsity (HumanEval+ test split, seed 65320, 33 tasks):
+
+| Sparsity | pass@1 | Teacher-forced perplexity (HumanEval/137, 49 tokens) |
+|---------:|-------:|-----------------------------------------------------:|
+| 0%       | 0.273  | 1.638 |
+| 20%      | 0.242  | 1.631 |
+| 40%      | 0.121  | 1.669 |
+| 60%      | 0.121  | 1.609 |
+| 80%      | 0.000  | 5.135 |
+
+## Legacy `scripts/run_humaneval_plus.py`
+
+A non-AWS, mock-friendly CLI for the HumanEval+ pipeline lives at
+[`scripts/run_humaneval_plus.py`](scripts/run_humaneval_plus.py); it is
+the simplest entry point for testing changes to the verifier or task
+adapters without launching any GPU.
 
 ```bash
 python scripts/run_humaneval_plus.py --provider mock --max-samples 3
 ```
 
-To provide deterministic mock completions, pass a JSON file:
-
-```json
-{
-  "HumanEval/0": "def has_close_elements(numbers, threshold):\n    return False\n"
-}
-```
-
-```bash
-python scripts/run_humaneval_plus.py \
-  --provider mock \
-  --max-samples 3 \
-  --mock-completions-file path/to/mock_completions.json
-```
-
-## Provider configuration
-- `--provider mock|bedrock|sagemaker`: selects inference backend.
-- `--bedrock-model-id`: required with `--provider bedrock`.
-- `--sagemaker-endpoint-name`: required with `--provider sagemaker`.
-- `--pruning-level`: required with `--provider sagemaker`.
-- `--seed`: required with `--provider sagemaker`.
-
-Bedrock remains a placeholder adapter. SageMaker client invocation is implemented and
-expects an endpoint that returns JSON with `generated_text` and metadata fields such
-as `logits_s3_uri`.
-
-## Output artifacts
-The runner writes files under `artifacts/humaneval_plus/` by default:
-- `records.jsonl`: one JSON record per task with prompt, generated code, and verification status.
-- `summary.json`: aggregate metrics (`num_tasks`, `num_passed`, `pass_at_1`, status breakdown).
-
-## Notebook demo
-- `notebooks/aws_sagemaker_pruning_and_logprobs.ipynb`: end-to-end SageMaker walkthrough for pruning, deployment, invocation, and token log-probability reconstruction from logits artifacts. One-time AWS bootstrap: `make -f infra/aws/Makefile setup` from the repository root (see `infra/aws/sagemaker/README.md`). Suitable for **smaller-model** demos that fit on the SageMaker endpoint quota of the target account.
-
-## Qwen2-72B EC2 GPU experiment
-For the actual Qwen2-72B WANDA prune + HumanEval+ + teacher-forced log-probs run, the SageMaker-endpoint workflow is bypassed: GPU-endpoint quota for the instance types large enough to host a 72 B model is `0` in this account. Instead, a single EC2 spot GPU instance (p5.48xlarge / p4d.24xlarge) does pruning, evaluation, and teacher-forced scoring in one process. See `infra/ec2/README.md` for the full runbook.
+For real model evaluation, use the four notebooks above.
