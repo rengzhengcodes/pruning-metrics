@@ -1,40 +1,32 @@
 #!/bin/bash
-# EC2 user-data bootstrap for the Qwen2-72B WANDA pruning experiment.
+# EC2 user-data bootstrap for the pruning-metrics GPU runners.
 #
 # This script runs once on first boot of the spot GPU instance. It is rendered
-# from infra/ec2/launch_gpu_instance.py with template variables substituted.
+# by infra/ec2/launch_gpu_instance.py with the following template variables
+# substituted in:
+#
+# See ``render_userdata`` in launch_gpu_instance.py for the full list of
+# substituted placeholders. The placeholder names use a ``__NAME__`` shape
+# to keep them visually distinct from real shell variables; do NOT echo the
+# placeholder names anywhere else in this script (a naive substitution would
+# pick them up and break the rendered output).
 #
 # Responsibilities:
-# 1. Stream stdout+stderr to a CloudWatch-friendly log (no agent needed; we use
-#    the SSM-managed instance core role + tail via SSM Session Manager).
+# 1. Stream stdout+stderr to a log file synced to S3 on exit.
 # 2. Pull the repository tarball from S3 (uploaded by the launcher).
-# 3. Install/refresh Python dependencies into the Deep Learning AMI's
-#    pre-existing PyTorch conda environment.
-# 4. Run infra/ec2/run_qwen_pruning_experiment.py with the configured
-#    environment variables.
-# 5. On success or failure, sync residual logs to S3 and shutdown to release
-#    the spot reservation. Spot interruption notifications also trigger
-#    shutdown so partial S3 sync still happens.
+# 3. Probe DLAMI conda envs for a python with torch pre-installed; fall back
+#    to system pip if none.
+# 4. Export runner-specific env vars and run the chosen runner script.
+# 5. On success, failure, or spot interruption, sync residual logs + results
+#    to S3 and shut down the instance.
 #
-# Template variables (rendered by the launcher):
-#   __RESULTS_BUCKET__         S3 bucket for the tarball + results.
-#   __REPO_TARBALL_KEY__       S3 key under that bucket holding repo.tar.gz.
-#   __RESULTS_PREFIX__         Object prefix for results (run id appended in script).
-#   __RUN_ID__                 Run identifier.
-#   __BASE_MODEL_ID__          HF model id to load and prune.
-#   __PRUNING_LEVELS__         Comma-separated pruning percentages.
-#   __SPLIT_SEED__             HumanEval+ split seed.
-#   __TRAIN_FRAC__             Train fraction.
-#   __TF_SEED__                Teacher-forcing seed.
-#   __HF_TOKEN__               Optional HF token (empty when not gated).
-
 # NOTE: deliberately not using `set -u`. AWS DLAMI shells leave several
-# environment variables (PYTHONPATH, LD_LIBRARY_PATH, ...) unset, and we want
-# to be tolerant when appending to them. We do use `set -o pipefail` so
-# silent failures inside pipelines surface in the log.
+# environment variables (PYTHONPATH, LD_LIBRARY_PATH, ...) unset, and we
+# want to be tolerant when appending to them. We do use `set -o pipefail`
+# so silent failures inside pipelines surface in the log.
+
 set -o pipefail
 
-# Cloud-init runs user-data as root.
 LOG_DIR=/var/log/pruning-experiment
 mkdir -p "$LOG_DIR"
 exec > >(tee -a "$LOG_DIR/userdata.log") 2>&1
@@ -54,12 +46,9 @@ RESULTS_BUCKET='__RESULTS_BUCKET__'
 REPO_TARBALL_KEY='__REPO_TARBALL_KEY__'
 RESULTS_PREFIX='__RESULTS_PREFIX__'
 RUN_ID='__RUN_ID__'
-BASE_MODEL_ID='__BASE_MODEL_ID__'
-PRUNING_LEVELS='__PRUNING_LEVELS__'
-SPLIT_SEED='__SPLIT_SEED__'
-TRAIN_FRAC='__TRAIN_FRAC__'
-TF_SEED='__TF_SEED__'
 HF_TOKEN='__HF_TOKEN__'
+RUNNER_RELPATH='__RUNNER_RELPATH__'
+RUNNER_CLI_ARGS='__RUNNER_CLI_ARGS__'
 
 WORK_DIR=/opt/pruning-metrics
 RESULTS_DIR=/opt/results
@@ -87,8 +76,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Spot interruption signal (best-effort): poll the metadata service in the
-# background and, if interruption is announced, sync results immediately.
+# Spot-interruption watchdog: best-effort sync when AWS announces a stop.
 (
     while true; do
         sleep 5
@@ -107,9 +95,7 @@ trap cleanup EXIT
     done
 ) &
 
-# AWS Deep Learning OSS Nvidia AMI for Ubuntu ships pre-built PyTorch under a
-# conda env. The exact path depends on the AMI variant, so we probe a list of
-# known locations and pick the first python that already imports `torch`.
+# Probe DLAMI python locations for one that already has torch.
 PYTHON_BIN=""
 for candidate in \
     /opt/pytorch/bin/python \
@@ -140,8 +126,6 @@ if [ -z "$PYTHON_BIN" ]; then
         "python-dotenv>=1.0" \
         "huggingface_hub>=0.23"
 else
-    # Ensure the supporting deps are present (DLAMI ships transformers but the
-    # version may be older than what Qwen2-72B configs require).
     "$PYTHON_BIN" -m pip install --upgrade \
         "transformers>=4.42" \
         "accelerate>=0.30" \
@@ -174,32 +158,20 @@ if [ -n "$HF_TOKEN" ]; then
     "$PYTHON_BIN" -c "from huggingface_hub import login; login('$HF_TOKEN', add_to_git_credential=False)" || true
 fi
 
-# Make the project importable without an editable install (avoids needing C-extension
-# builds on the DLAMI). ${PYTHONPATH:-} guards against the variable being unset.
-export PYTHONPATH="$WORK_DIR/src:${PYTHONPATH:-}"
+# ${PYTHONPATH:-} guards against the variable being unset.
+export PYTHONPATH="$WORK_DIR/src:$WORK_DIR:${PYTHONPATH:-}"
 
-# Run the experiment. Timestamp inside RUN_ID is already unique.
+# Runner-specific env exports (rendered by the launcher).
+export RESULTS_BUCKET RESULTS_PREFIX RUN_ID
+export RESULTS_LOCAL_DIR="$RESULTS_DIR"
+__RUNNER_ENV_EXPORTS__
+
 cd "$WORK_DIR"
 mkdir -p "$RESULTS_DIR"
 
-echo "===== launching run_qwen_pruning_experiment.py ====="
-RESULTS_BUCKET="$RESULTS_BUCKET" \
-RESULTS_PREFIX="$RESULTS_PREFIX" \
-RUN_ID="$RUN_ID" \
-BASE_MODEL_ID="$BASE_MODEL_ID" \
-PRUNING_LEVELS="$PRUNING_LEVELS" \
-HUMANEVAL_SPLIT_SEED="$SPLIT_SEED" \
-HUMANEVAL_TRAIN_FRAC="$TRAIN_FRAC" \
-RESULTS_LOCAL_DIR="$RESULTS_DIR" \
-"$PYTHON_BIN" -u "$WORK_DIR/infra/ec2/run_qwen_pruning_experiment.py" \
-    --base-model-id "$BASE_MODEL_ID" \
-    --pruning-levels "$PRUNING_LEVELS" \
-    --split-seed "$SPLIT_SEED" \
-    --train-frac "$TRAIN_FRAC" \
-    --teacher-forcing-seed "$TF_SEED" \
-    --output-dir "$RESULTS_DIR" \
-    --results-bucket "$RESULTS_BUCKET" \
-    --results-prefix "$RESULTS_PREFIX" \
-    --run-id "$RUN_ID"
+echo "===== launching $RUNNER_RELPATH ====="
+echo "Extra CLI args: $RUNNER_CLI_ARGS"
+# shellcheck disable=SC2086 -- intentional word-splitting of CLI args
+"$PYTHON_BIN" -u "$WORK_DIR/$RUNNER_RELPATH" $RUNNER_CLI_ARGS
 
-echo "===== run_qwen_pruning_experiment.py finished at $(date -u +%FT%TZ) ====="
+echo "===== $RUNNER_RELPATH finished at $(date -u +%FT%TZ) ====="

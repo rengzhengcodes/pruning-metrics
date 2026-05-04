@@ -1,0 +1,87 @@
+"""Determinism + override behaviour for the shared train/test splitter."""
+
+from __future__ import annotations
+
+import pytest
+
+from pruning_metrics.evals.tasks.base import (
+    TaskRecord,
+    deterministic_split,
+    records_to_id_map,
+)
+
+
+def _make_records(count: int) -> list[TaskRecord]:
+    return [
+        TaskRecord(
+            task_id=f"t/{idx:04d}",
+            prompt=f"prompt {idx}",
+            target_text=f"target {idx}",
+            metadata={"index": idx},
+        )
+        for idx in range(count)
+    ]
+
+
+def test_deterministic_split_is_stable_for_seed() -> None:
+    """Two calls with the same seed must return identical task-id lists."""
+
+    records = _make_records(20)
+    first_train, first_test = deterministic_split(records, seed=65320)
+    second_train, second_test = deterministic_split(records, seed=65320)
+    assert [r.task_id for r in first_train] == [r.task_id for r in second_train]
+    assert [r.task_id for r in first_test] == [r.task_id for r in second_test]
+    assert len(first_train) == 16
+    assert len(first_test) == 4
+
+
+def test_deterministic_split_changes_with_seed() -> None:
+    records = _make_records(50)
+    train_a, _ = deterministic_split(records, seed=1)
+    train_b, _ = deterministic_split(records, seed=2)
+    assert [r.task_id for r in train_a] != [r.task_id for r in train_b]
+
+
+def test_deterministic_split_validates_train_frac() -> None:
+    records = _make_records(5)
+    with pytest.raises(ValueError, match="train_frac"):
+        deterministic_split(records, train_frac=0.0)
+    with pytest.raises(ValueError, match="train_frac"):
+        deterministic_split(records, train_frac=1.0)
+
+
+def test_deterministic_split_honours_explicit_overrides() -> None:
+    records = _make_records(20)
+    train_ids = ["t/0001", "t/0007", "t/0019"]
+    test_ids = ["t/0000", "t/0010"]
+    train_records, test_records = deterministic_split(
+        records,
+        seed=42,
+        train_frac=0.5,
+        explicit_train_ids=train_ids,
+        explicit_test_ids=test_ids,
+    )
+    train_id_set = {r.task_id for r in train_records}
+    test_id_set = {r.task_id for r in test_records}
+    assert set(train_ids).issubset(train_id_set)
+    assert set(test_ids).issubset(test_id_set)
+    assert not train_id_set & set(test_ids)
+    assert not test_id_set & set(train_ids)
+
+
+def test_deterministic_split_rejects_overlapping_overrides() -> None:
+    records = _make_records(5)
+    with pytest.raises(ValueError, match="overlap"):
+        deterministic_split(
+            records,
+            explicit_train_ids=["t/0001"],
+            explicit_test_ids=["t/0001"],
+        )
+
+
+def test_records_to_id_map_detects_duplicates() -> None:
+    records = _make_records(2) + [
+        TaskRecord(task_id="t/0000", prompt="dup", target_text="dup")
+    ]
+    with pytest.raises(ValueError, match="Duplicate"):
+        records_to_id_map(records)
