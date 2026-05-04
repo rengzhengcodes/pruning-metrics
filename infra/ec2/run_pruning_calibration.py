@@ -142,12 +142,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--split-seed",
         type=int,
-        default=int(env_or("HUMANEVAL_SPLIT_SEED", "SPLIT_SEED", default="65320")),
+        default=int(env_or("SPLIT_SEED", default="65320")),
     )
     parser.add_argument(
         "--train-frac",
         type=float,
-        default=float(env_or("HUMANEVAL_TRAIN_FRAC", "TRAIN_FRAC", default="0.8")),
+        default=float(env_or("TRAIN_FRAC", default="0.8")),
     )
     parser.add_argument(
         "--explicit-train-ids",
@@ -236,8 +236,20 @@ def main() -> int:
     if not train_records:
         raise RuntimeError("Train split is empty; cannot collect calibration stats.")
 
-    if config.max_calibration_samples is not None:
-        train_records = train_records[: config.max_calibration_samples]
+    if (
+        config.max_calibration_samples is not None
+        and len(train_records) > config.max_calibration_samples
+    ):
+        # Native splits (e.g. GSM8K's 7473-row train) are returned in dataset
+        # order, so a naive slice would always pick the first N rows. Apply a
+        # seeded shuffle keyed on ``SPLIT_SEED`` so the cap is reproducible
+        # regardless of HF row order.
+        import random  # local import to keep the module light at import time
+
+        rng = random.Random(config.split_seed)
+        shuffled = list(train_records)
+        rng.shuffle(shuffled)
+        train_records = shuffled[: config.max_calibration_samples]
 
     LOGGER.info(
         "Split: %d train (calibration) / %d test, dataset=%s",

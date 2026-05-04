@@ -23,8 +23,8 @@ tests for teacher forcing and per-row WANDA will be picked up by `pytest`.
 ## 2. Configure AWS credentials
 
 The notebooks default to `AWS_PROFILE=rengz`; point them at any profile
-with the permissions described in
-[`infra/aws/iam/README.md`](../infra/aws/iam/README.md). Verify with:
+that can call `RunInstances`, manage S3 + IAM, and read SSM Parameter
+Store (notebook 1 creates the rest). Verify with:
 
 ```bash
 AWS_PROFILE=<profile> aws sts get-caller-identity --region us-east-1
@@ -62,10 +62,16 @@ in your habit list at the start of every session.
 ```python
 # Inside the configuration cell of 02_prune_llm.ipynb
 BASE_MODEL_ID = "Qwen/Qwen2-72B"             # or any HF causal LM
+
+# Pick any registered task adapter:
+#   - "coding"                            -> HumanEval+ (seeded 80/20 fallback)
+#   - "math:gsm8k:main"                   -> GSM8K native train + test splits
+#   - "mcq:allenai/ai2_arc:ARC-Challenge" -> ARC native train + test splits
 CALIBRATION_DATASET_SPEC = "coding:evalplus/humanevalplus:test"
+
 PRUNING_LEVELS = [0, 20, 40, 60, 80]
-SPLIT_SEED = 65320
-TRAIN_FRAC = 0.8
+SPLIT_SEED = 65320  # only used for the seeded fallback / sample cap
+TRAIN_FRAC = 0.8    # ditto
 INSTANCE_TYPE_PRIORITY = ["p4de.24xlarge", "p5.48xlarge", "p4d.24xlarge"]
 ```
 

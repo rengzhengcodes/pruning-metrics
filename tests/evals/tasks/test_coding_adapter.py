@@ -101,3 +101,23 @@ def test_coding_adapter_build_inference_prompt_wraps_with_instruction(
     assert "Return only valid Python code" in wrapped
     # TF prompt is the raw prompt, unchanged.
     assert record.prompt != wrapped
+
+
+def test_coding_adapter_default_train_split_is_none(
+    monkeypatch, fake_dataset_records
+) -> None:
+    """HumanEval+ ships only a test split, so train_split defaults to None
+    and the seeded fallback partitions the test split into train/test."""
+
+    monkeypatch.setattr(
+        "pruning_metrics.evals.coding.humaneval_plus_dataset.load_dataset",
+        lambda dataset_name, split: fake_dataset_records,
+    )
+
+    adapter = CodingTaskAdapter()
+    assert adapter.train_split is None
+    assert adapter.test_split == "test"
+
+    train, test = adapter.train_test_split(seed=65320, train_frac=0.5)
+    # All records still accounted for after the seeded shuffle.
+    assert len(train) + len(test) == len(fake_dataset_records)

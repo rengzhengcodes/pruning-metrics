@@ -7,6 +7,7 @@ import pytest
 from pruning_metrics.evals.tasks.base import (
     TaskRecord,
     deterministic_split,
+    native_or_seeded_split,
     records_to_id_map,
 )
 
@@ -85,3 +86,50 @@ def test_records_to_id_map_detects_duplicates() -> None:
     ]
     with pytest.raises(ValueError, match="Duplicate"):
         records_to_id_map(records)
+
+
+def _make_records_in_namespace(prefix: str, count: int) -> list[TaskRecord]:
+    return [
+        TaskRecord(
+            task_id=f"{prefix}/{idx:04d}",
+            prompt=f"prompt {idx}",
+            target_text=f"target {idx}",
+            metadata={"index": idx},
+        )
+        for idx in range(count)
+    ]
+
+
+def test_native_or_seeded_split_uses_native_partitions() -> None:
+    """When both native partitions are present and no overrides, use them as-is."""
+
+    train = _make_records_in_namespace("train", 4)
+    test = _make_records_in_namespace("test", 2)
+    out_train, out_test = native_or_seeded_split(train, test, seed=999, train_frac=0.1)
+    assert [r.task_id for r in out_train] == [r.task_id for r in train]
+    assert [r.task_id for r in out_test] == [r.task_id for r in test]
+
+
+def test_native_or_seeded_split_falls_back_when_no_train() -> None:
+    """``train_records=None`` triggers the seeded fallback over the test split."""
+
+    test = _make_records(10)
+    out_train, out_test = native_or_seeded_split(None, test, seed=65320, train_frac=0.8)
+    assert len(out_train) + len(out_test) == 10
+
+
+def test_native_or_seeded_split_overrides_force_seeded_path() -> None:
+    """Explicit overrides re-route through the seeded splitter even with native splits."""
+
+    train = _make_records_in_namespace("train", 4)
+    test = _make_records_in_namespace("test", 2)
+    forced_train_ids = [r.task_id for r in test]  # promote test rows into train
+    out_train, _ = native_or_seeded_split(
+        train,
+        test,
+        seed=65320,
+        train_frac=0.5,
+        explicit_train_ids=forced_train_ids,
+    )
+    out_train_ids = {r.task_id for r in out_train}
+    assert set(forced_train_ids).issubset(out_train_ids)

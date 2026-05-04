@@ -1,8 +1,12 @@
 """Multiple-choice task adapter (ARC-Challenge by default).
 
-Targets the ``allenai/ai2_arc`` family on the Hugging Face Hub. Free-form
-verification regex-extracts the first ``A|B|C|D|E`` token from the model's
-generation and compares it to the gold ``answerKey``.
+Targets the ``allenai/ai2_arc`` family on the Hugging Face Hub. ARC-Challenge
+ships ``train`` and ``test`` splits; like GSM8K, there is no separate
+``validation`` split on the default config, and this adapter never assumes
+one—only the configured train and test split names are loaded.
+
+Free-form verification regex-extracts the first ``A|B|C|D|E`` token from the
+model's generation and compares it to the gold ``answerKey``.
 
 For teacher forcing, ``target_text`` is the body of the correct choice (not
 its letter). This makes the TF score a meaningful signal of how confidently
@@ -21,7 +25,7 @@ from pruning_metrics.evals.tasks.base import (
     TaskAdapter,
     TaskRecord,
     VerificationOutcome,
-    deterministic_split,
+    native_or_seeded_split,
 )
 
 _LETTER_PATTERN = re.compile(r"\b([A-E])\b")
@@ -37,8 +41,14 @@ class MCQTaskAdapter(TaskAdapter):
     config:
         Dataset config (``ARC-Challenge`` or ``ARC-Easy``). Default
         ``ARC-Challenge``.
-    split:
-        Split to load. Default ``test``.
+    train_split:
+        Hugging Face split name for calibration rows. Default ``"train"``
+        (ARC-Challenge ships 1119 rows there). Pass ``None`` to force the
+        seeded 80/20 fallback over ``test_split`` when the dataset exposes
+        only one split (no named train partition on the Hub).
+    test_split:
+        Native test split name. Default ``"test"`` (ARC-Challenge ships
+        1172 rows there).
     """
 
     name = "mcq"
@@ -47,21 +57,24 @@ class MCQTaskAdapter(TaskAdapter):
         self,
         dataset_name: str = "allenai/ai2_arc",
         config: str = "ARC-Challenge",
-        split: str = "test",
+        train_split: str | None = "train",
+        test_split: str = "test",
     ) -> None:
         self.dataset_name = dataset_name
         self.config = config
-        self.split = split
-        self.dataset_spec = f"mcq:{dataset_name}:{config}:{split}"
-        self._records: list[TaskRecord] | None = None
+        self.train_split = train_split
+        self.test_split = test_split
+        split_label = (
+            f"{train_split}+{test_split}" if train_split else test_split
+        )
+        self.dataset_spec = f"mcq:{dataset_name}:{config}:{split_label}"
+        self._train_records: list[TaskRecord] | None = None
+        self._test_records: list[TaskRecord] | None = None
 
-    def load_records(self) -> list[TaskRecord]:
-        """Materialise ARC-style rows as :class:`TaskRecord`."""
+    def _load_split(self, split: str) -> list[TaskRecord]:
+        """Materialise ARC-style rows from a single Hugging Face split."""
 
-        if self._records is not None:
-            return list(self._records)
-
-        rows = load_dataset(self.dataset_name, self.config, split=self.split)
+        rows = load_dataset(self.dataset_name, self.config, split=split)
         records: list[TaskRecord] = []
         for row in rows:
             row_id = str(row["id"])
@@ -90,8 +103,19 @@ class MCQTaskAdapter(TaskAdapter):
                     },
                 )
             )
-        self._records = records
-        return list(records)
+        return records
+
+    def load_records(self) -> list[TaskRecord]:
+        """Concatenate train + test records (train first when available)."""
+
+        if self._test_records is None:
+            self._test_records = self._load_split(self.test_split)
+        if self.train_split is not None and self._train_records is None:
+            self._train_records = self._load_split(self.train_split)
+
+        if self._train_records is not None:
+            return list(self._train_records) + list(self._test_records)
+        return list(self._test_records)
 
     def train_test_split(
         self,
@@ -100,8 +124,11 @@ class MCQTaskAdapter(TaskAdapter):
         explicit_train_ids: Sequence[str] | None = None,
         explicit_test_ids: Sequence[str] | None = None,
     ) -> tuple[list[TaskRecord], list[TaskRecord]]:
-        return deterministic_split(
-            self.load_records(),
+        # Trigger lazy load so both splits are populated.
+        self.load_records()
+        return native_or_seeded_split(
+            self._train_records,
+            self._test_records,
             seed=seed,
             train_frac=train_frac,
             explicit_train_ids=explicit_train_ids,

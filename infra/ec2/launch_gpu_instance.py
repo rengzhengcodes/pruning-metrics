@@ -11,7 +11,6 @@ Supported ``--runner`` values:
 * ``pruning_calibration`` -> ``infra/ec2/run_pruning_calibration.py``
 * ``freeform_eval``       -> ``infra/ec2/run_freeform_eval.py``
 * ``teacher_forced``      -> ``infra/ec2/run_teacher_forced.py``
-* ``full_pipeline``       -> ``infra/ec2/run_qwen_pruning_experiment.py`` (legacy)
 
 Runner-specific knobs are passed via ``--runner-env KEY=VALUE`` (repeatable)
 or ``--runner-env-json '{"KEY": "VALUE"}'``. Each runner consumes those env
@@ -75,7 +74,6 @@ RUNNER_RELPATHS: dict[str, str] = {
     "pruning_calibration": "infra/ec2/run_pruning_calibration.py",
     "freeform_eval": "infra/ec2/run_freeform_eval.py",
     "teacher_forced": "infra/ec2/run_teacher_forced.py",
-    "full_pipeline": "infra/ec2/run_qwen_pruning_experiment.py",
 }
 
 
@@ -97,11 +95,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--runner",
         choices=sorted(RUNNER_RELPATHS),
-        default="full_pipeline",
-        help=(
-            "Which runner the user-data should invoke. Default keeps the "
-            "monolithic pipeline for back-compat."
-        ),
+        default="pruning_calibration",
+        help="Which runner the user-data should invoke.",
     )
     parser.add_argument(
         "--runner-env",
@@ -165,16 +160,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-shutdown-on-exit", action="store_true")
     parser.add_argument("--name-tag", default="pruning-metrics-runner")
-
-    # ----- back-compat aliases for the legacy ``full_pipeline`` runner -----
-    # These are preserved so existing scripts / cells that pre-date the
-    # generalisation keep working. They are folded into ``runner_env`` in
-    # main() when --runner=full_pipeline is selected.
-    parser.add_argument("--base-model-id", default=None)
-    parser.add_argument("--pruning-levels", default=None)
-    parser.add_argument("--split-seed", default=None)
-    parser.add_argument("--train-frac", default=None)
-    parser.add_argument("--teacher-forcing-seed", default=None)
     return parser.parse_args()
 
 
@@ -265,20 +250,6 @@ def collect_runner_env(args: argparse.Namespace) -> dict[str, str]:
             raise ValueError("--runner-env-json must decode to a JSON object.")
         for key, value in parsed.items():
             env[str(key)] = "" if value is None else str(value)
-
-    # Back-compat: fold legacy CLI flags into runner env when present.
-    legacy_pairs = [
-        ("BASE_MODEL_ID", args.base_model_id),
-        ("PRUNING_LEVELS", args.pruning_levels),
-        ("HUMANEVAL_SPLIT_SEED", args.split_seed),
-        ("HUMANEVAL_TRAIN_FRAC", args.train_frac),
-        # Both runner_freeform_eval / teacher_forced read TF_SEED / GENERATION_SEED;
-        # the legacy monolithic runner uses HUMANEVAL_SPLIT_SEED for both.
-        ("TF_SEED", args.teacher_forcing_seed),
-    ]
-    for key, value in legacy_pairs:
-        if value is not None and key not in env:
-            env[key] = str(value)
 
     return env
 

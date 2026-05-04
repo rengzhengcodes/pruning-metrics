@@ -30,12 +30,6 @@ artifact to S3.
   scripts, and shared WANDA / S3 helpers. Each runner runs unattended on
   an EC2 box and self-terminates when finished.
 
-* **Legacy SageMaker reference** in
-  [`infra/aws/sagemaker/`](infra/aws/sagemaker/) and
-  [`notebooks/aws_sagemaker_pruning_and_logprobs.ipynb`](notebooks/aws_sagemaker_pruning_and_logprobs.ipynb).
-  Kept for small-model demos; not used for the canonical Qwen2-72B run
-  because SageMaker GPU endpoint quotas are too low.
-
 ## Documentation entry points
 
 * **[`docs/getting_started.md`](docs/getting_started.md)** -- run your
@@ -84,15 +78,13 @@ With pass@1 by sparsity (HumanEval+ test split, seed 65320, 33 tasks):
 | 60%      | 0.121  | 1.609 |
 | 80%      | 0.000  | 5.135 |
 
-## Legacy `scripts/run_humaneval_plus.py`
+## Native dataset splits
 
-A non-AWS, mock-friendly CLI for the HumanEval+ pipeline lives at
-[`scripts/run_humaneval_plus.py`](scripts/run_humaneval_plus.py); it is
-the simplest entry point for testing changes to the verifier or task
-adapters without launching any GPU.
-
-```bash
-python scripts/run_humaneval_plus.py --provider mock --max-samples 3
-```
-
-For real model evaluation, use the four notebooks above.
+Math (GSM8K) and MCQ (ARC-Challenge) adapters use the dataset's native
+``train`` and ``test`` Hub splits by default (GSM8K ``main`` has both; it
+does not define a separate ``validation`` split, and nothing in this repo
+requires one). The seed (`SPLIT_SEED`) is only used to reproducibly
+truncate when `MAX_CALIBRATION_SAMPLES` caps the native train split.
+Coding (HumanEval+) ships a single ``test`` split, so its calibration
+partition still comes from a seeded 80/20 fallback. See
+[`docs/tasks.md`](docs/tasks.md) for the spec grammar.

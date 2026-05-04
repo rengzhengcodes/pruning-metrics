@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
@@ -164,63 +163,6 @@ class HumanEvalPlusDatasetLoader:  # pylint: disable=too-few-public-methods
                 else None
             ),
         )
-
-    def split_train_test(
-        self,
-        seed: int = 65320,
-        train_frac: float = 0.8,
-        max_samples: int | None = None,
-    ) -> tuple[list[HumanEvalPlusTask], list[HumanEvalPlusTask]]:
-        """Deterministically partition HumanEval+ tasks into train/test lists.
-
-        The HumanEval+ release ships only a single ``test`` split. For pruning we
-        need a calibration ("train") subset and a held-out evaluation ("test")
-        subset. This helper produces a reproducible 80/20 (or any
-        ``train_frac``) split using ``random.Random(seed)`` to shuffle a stable
-        ordering of all task IDs.
-
-        Parameters
-        ----------
-        seed:
-            Random seed controlling the shuffle. Default mirrors the project
-            constant ``65320`` used elsewhere.
-        train_frac:
-            Fraction of tasks routed to the calibration ("train") subset.
-            Must satisfy ``0 < train_frac < 1``.
-        max_samples:
-            Optional cap on the total number of tasks loaded before splitting.
-            Useful for smoke-tests; ``None`` keeps the entire 164-task dataset.
-
-        Returns
-        -------
-        tuple[list[HumanEvalPlusTask], list[HumanEvalPlusTask]]
-            ``(train_tasks, test_tasks)`` lists, each ordered by the random
-            shuffle so the partition is independent of dataset ordering.
-
-        Preconditions
-        -------------
-        ``train_frac`` is in ``(0, 1)``.
-
-        Postconditions
-        --------------
-        - The two lists are disjoint and their union covers every loaded task
-          exactly once.
-        - The split is identical across runs for the same ``seed``,
-          ``train_frac``, and underlying dataset.
-        """
-
-        if not 0.0 < train_frac < 1.0:
-            raise ValueError("train_frac must be strictly between 0 and 1.")
-
-        all_tasks = self.load_tasks(max_samples=max_samples)
-        # Sort by task_id so the input ordering is independent of HF row order.
-        ordered = sorted(all_tasks, key=lambda task: task.task_id)
-        rng = random.Random(seed)
-        shuffled = ordered[:]
-        rng.shuffle(shuffled)
-
-        cut = max(1, min(len(shuffled) - 1, int(round(train_frac * len(shuffled)))))
-        return shuffled[:cut], shuffled[cut:]
 
     @staticmethod
     def _validate_requested_ids(

@@ -4,9 +4,7 @@ Used by:
 
 * :mod:`infra.ec2.run_pruning_calibration` (notebook 2),
 * :mod:`infra.ec2.run_freeform_eval` (notebook 3),
-* :mod:`infra.ec2.run_teacher_forced` (notebook 4),
-* and the legacy monolithic
-  :mod:`infra.ec2.run_qwen_pruning_experiment`.
+* :mod:`infra.ec2.run_teacher_forced` (notebook 4).
 
 All helpers are torch-free at import time so the launcher / notebook helpers
 can ``import infra.ec2._runner_common`` for type hints and S3 utilities

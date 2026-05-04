@@ -53,18 +53,15 @@ operator-side state outside the notebooks.
 
 ## Why this shape
 
-The original notebook in this repo (`aws_sagemaker_pruning_and_logprobs.ipynb`)
-ran the entire pipeline as one SageMaker endpoint. That broke for Qwen2-72B
-because:
+We pivoted to a self-contained EC2 GPU runner per phase because:
 
 * SageMaker GPU-endpoint quota in this account is `0` for every instance
   large enough to host a 72 B-parameter model in bf16;
-* the workstation has no GPU, so the prior "prune locally + push 5x ~145 GiB
-  to S3" approach was infeasible.
+* the workstation has no GPU, so a "prune locally + push 5x ~145 GiB to
+  S3" approach was infeasible.
 
-We pivoted to a self-contained EC2 GPU runner per phase. The GPU box runs
-under its own IAM instance profile, so the experiment proceeds even after
-the operator's SSO token expires.
+The GPU box runs under its own IAM instance profile, so the experiment
+proceeds even after the operator's SSO token expires.
 
 ## Pruning artifact: WANDA calibration stats only
 
@@ -72,7 +69,8 @@ We deliberately persist a **tiny** pruning artifact (~tens of MB):
 
 * `wanda_stats.pt` -- per-input-channel RMS for every `nn.Linear` layer.
 * `manifest.json` -- model id, dataset spec, seeds, package versions.
-* `split.json` -- the audited 80/20 train/test partition.
+* `split.json` -- the audited train/test partition (native splits when
+  the dataset has both, otherwise the seeded 80/20 fallback).
 
 Downstream notebooks reload the base model and re-derive pruned weights
 deterministically per level by re-applying the per-row WANDA scoring
@@ -93,39 +91,35 @@ pruning-metrics/
 │   ├── 01_setup_aws.ipynb            # one-time AWS bootstrap
 │   ├── 02_prune_llm.ipynb            # produces wanda_stats.pt + manifest
 │   ├── 03_freeform_eval.ipynb        # greedy generation + verifier per level
-│   ├── 04_teacher_forced.ipynb       # per-token log-probs per level
-│   └── aws_sagemaker_pruning_and_logprobs.ipynb  # legacy SageMaker reference
+│   └── 04_teacher_forced.ipynb       # per-token log-probs per level
 ├── src/pruning_metrics/
 │   ├── notebook_helpers.py           # find_capacity / launch_runner / poll loops
 │   └── evals/
 │       ├── tasks/                    # TaskAdapter contract + 3 concrete adapters
-│       │   ├── base.py               # Protocol, TaskRecord, deterministic_split
-│       │   ├── coding.py             # HumanEval+ adapter
-│       │   ├── math.py               # GSM8K numeric-answer adapter
-│       │   ├── mcq.py                # ARC-Challenge regex-letter adapter
+│       │   ├── base.py               # Protocol, TaskRecord, native_or_seeded_split
+│       │   ├── coding.py             # HumanEval+ adapter (seeded 80/20 fallback)
+│       │   ├── math.py               # GSM8K numeric-answer adapter (native splits)
+│       │   ├── mcq.py                # ARC-Challenge regex-letter adapter (native splits)
 │       │   └── registry.py           # build_adapter_from_spec()
-│       └── coding/                   # legacy HumanEval+ helpers (still used)
+│       └── coding/                   # HumanEval+ loader, verifier, TF helper
 │           ├── humaneval_plus_dataset.py
 │           ├── verifier.py
-│           ├── pipeline.py
 │           └── teacher_forcing.py
 ├── infra/
 │   ├── aws/setup/
 │   │   └── bootstrap_ec2_resources.py  # runs from notebook 1
-│   ├── ec2/
-│   │   ├── _runner_common.py         # WANDA + S3 helpers shared by 3 runners
-│   │   ├── run_pruning_calibration.py# notebook 2's worker
-│   │   ├── run_freeform_eval.py      # notebook 3's worker
-│   │   ├── run_teacher_forced.py     # notebook 4's worker
-│   │   ├── run_qwen_pruning_experiment.py # legacy monolithic runner
-│   │   ├── launch_gpu_instance.py    # tarball + AMI + RunInstances
-│   │   ├── userdata_bootstrap.sh     # cloud-init template
-│   │   └── find_capacity.py          # spot-price probe
-│   └── containers/qwen-serving/      # legacy SageMaker container (unused)
+│   └── ec2/
+│       ├── _runner_common.py         # WANDA + S3 helpers shared by 3 runners
+│       ├── run_pruning_calibration.py# notebook 2's worker
+│       ├── run_freeform_eval.py      # notebook 3's worker
+│       ├── run_teacher_forced.py     # notebook 4's worker
+│       ├── launch_gpu_instance.py    # tarball + AMI + RunInstances
+│       ├── userdata_bootstrap.sh     # cloud-init template
+│       └── find_capacity.py          # spot-price probe
 ├── scripts/
 │   └── build_notebooks.py            # regenerates the 4 notebooks
 ├── docs/                             # this folder
-└── tests/                            # pytest suite (54 tests)
+└── tests/                            # pytest suite
 ```
 
 ## Lifecycle of a single experiment
@@ -165,14 +159,22 @@ pruning-metrics/
 
 Every random source is seeded:
 
-* the train/test split (`SPLIT_SEED`, default `65320`);
-* the calibration sample selection (capped via `MAX_CALIBRATION_SAMPLES`);
+* the seeded train/test fallback when a dataset has only one native
+  split (HumanEval+; `SPLIT_SEED`, default `65320`);
+* the calibration sample selection cap (`MAX_CALIBRATION_SAMPLES`,
+  applied via a `SPLIT_SEED`-keyed shuffle so a cap over a 7473-row
+  GSM8K train set still picks the same N rows on every run);
 * `torch.manual_seed` on every generation step (`GENERATION_SEED`);
 * the teacher-forced sample selection (`TF_SEED`).
 
-`split.json` records the full ordered task-id partition for review. All
-runner-side seeds are forwarded via env vars and recorded in
-`run_metadata.json` next to the artifacts.
+For datasets with native train + test splits (GSM8K, ARC), the partition
+itself is **not** randomised -- it follows the Hugging Face row order and
+ignores `SPLIT_SEED` / `TRAIN_FRAC`. Those benchmarks' default Hub configs
+expose ``train`` and ``test`` only (no separate ``validation`` split); the
+task adapters never assume a ``validation`` key exists. `split.json` records
+the full ordered task-id partition either way for review. All runner-side
+seeds are forwarded via env vars and recorded in `run_metadata.json` next to
+the artifacts.
 
 ## Where to extend
 
@@ -196,10 +198,3 @@ runner-side seeds are forwarded via env vars and recorded in
 | Notebook 4 | same | ~5 min for 1 sample x 5 levels | ~5 min | ~$0.07 / $1 |
 
 Spot prices fluctuate; `find_capacity.py` always reports a fresh quote.
-
-## Legacy SageMaker path
-
-[`infra/aws/sagemaker/`](../infra/aws/sagemaker/) and
-[`notebooks/aws_sagemaker_pruning_and_logprobs.ipynb`](../notebooks/aws_sagemaker_pruning_and_logprobs.ipynb)
-are kept for reference and small-model demos. They require a
-quota-increased SageMaker endpoint and are not used for the Qwen2-72B run.

@@ -10,6 +10,7 @@ from pruning_metrics.evals.tasks.math import (
     _extract_numeric,
     _parse_number,
 )
+from pruning_metrics.evals.tasks import math as math_module
 
 
 @pytest.mark.parametrize(
@@ -65,3 +66,68 @@ def test_math_adapter_verify_uses_gsm_divider_priority() -> None:
     )
     text = "I had 100 things, kept 13, used 80, finally #### 7"
     assert adapter.verify(record, text).status == "pass"
+
+
+def _fake_gsm8k_rows(prefix: str, count: int) -> list[dict[str, str]]:
+    """Mint ``count`` synthetic GSM8K rows with monotonic gold numbers."""
+
+    return [
+        {
+            "question": f"{prefix} q{i}",
+            "answer": f"reasoning ... #### {i}",
+        }
+        for i in range(count)
+    ]
+
+
+def test_math_adapter_uses_native_splits_in_dataset_order(monkeypatch) -> None:
+    """With both native splits configured, ``train_test_split`` returns the
+    natively-loaded partitions verbatim (no shuffling, ignores seed/train_frac).
+    """
+
+    train_rows = _fake_gsm8k_rows("train", 5)
+    test_rows = _fake_gsm8k_rows("test", 3)
+
+    def fake_load_dataset(_name, _config, split):
+        if split == "train":
+            return train_rows
+        if split == "test":
+            return test_rows
+        raise AssertionError(f"unexpected split {split!r}")
+
+    monkeypatch.setattr(math_module, "load_dataset", fake_load_dataset)
+
+    adapter = MathTaskAdapter()
+    train, test = adapter.train_test_split(seed=999, train_frac=0.1)
+
+    assert [r.task_id for r in train] == [
+        f"gsm8k/train/{i:05d}" for i in range(len(train_rows))
+    ]
+    assert [r.task_id for r in test] == [
+        f"gsm8k/test/{i:05d}" for i in range(len(test_rows))
+    ]
+    assert adapter.dataset_spec == "math:gsm8k:main:train+test"
+
+
+def test_math_adapter_falls_back_to_seeded_split_when_train_split_is_none(
+    monkeypatch,
+) -> None:
+    """When ``train_split=None`` only the test split is loaded and the seeded
+    fallback partitions it (~80/20).
+    """
+
+    test_rows = _fake_gsm8k_rows("only", 10)
+
+    def fake_load_dataset(_name, _config, split):
+        assert split == "test"
+        return test_rows
+
+    monkeypatch.setattr(math_module, "load_dataset", fake_load_dataset)
+
+    adapter = MathTaskAdapter(train_split=None)
+    train, test = adapter.train_test_split(seed=65320, train_frac=0.8)
+    assert len(train) + len(test) == len(test_rows)
+    # Reproducibility: same seed -> same partition.
+    train_again, test_again = adapter.train_test_split(seed=65320, train_frac=0.8)
+    assert [r.task_id for r in train] == [r.task_id for r in train_again]
+    assert [r.task_id for r in test] == [r.task_id for r in test_again]

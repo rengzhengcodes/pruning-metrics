@@ -1,9 +1,22 @@
 """Task adapter registry and spec parsing.
 
 Notebooks 2-4 select a task adapter by short name (``coding``, ``math``,
-``mcq``) or by a more detailed spec string of the form
-``<name>[:<dataset_name>[:<config>[:<split>]]]``. This module provides both
-shapes plus light validation so the four notebooks have a single import.
+``mcq``) or by a more detailed spec string. The spec grammar varies by
+adapter so that math / MCQ users can override either or both native splits:
+
+* ``coding[:<dataset_name>[:<test_split>]]`` -- HumanEval+ ships only a
+  ``test`` split; the seeded 80/20 fallback produces calibration data.
+* ``math[:<dataset_name>[:<config>[:<train_split>[:<test_split>]]]]`` --
+  default ``train_split=train, test_split=test`` (GSM8K ``main`` has both
+  Hub splits; there is no ``validation`` split on that config, and nothing
+  here assumes one). Pass ``""`` for ``train_split`` to force the seeded
+  fallback over the test split.
+* ``mcq[:<dataset_name>[:<config>[:<train_split>[:<test_split>]]]]`` --
+  default ``train_split=train, test_split=test`` (ARC-Challenge native
+  splits; likewise no ``validation`` split required).
+
+This module provides both shapes plus light validation so the four
+notebooks have a single import.
 """
 
 from __future__ import annotations
@@ -48,14 +61,24 @@ def build_adapter(name: str, **kwargs: Any) -> TaskAdapter:
 
 
 def build_adapter_from_spec(spec: str) -> TaskAdapter:
-    """Parse a ``<name>[:<dataset_name>[:<config>[:<split>]]]`` spec.
+    """Parse a task spec string into an adapter instance.
+
+    Spec grammar (each segment is optional, left-to-right):
+
+    * ``coding[:<dataset_name>[:<test_split>]]``
+    * ``math[:<dataset_name>[:<config>[:<train_split>[:<test_split>]]]]``
+    * ``mcq[:<dataset_name>[:<config>[:<train_split>[:<test_split>]]]]``
+
+    For math/MCQ, an empty ``train_split`` segment (e.g. ``math:gsm8k:main::test``)
+    forces the seeded 80/20 fallback over the test split.
 
     Examples
     --------
     >>> build_adapter_from_spec("coding")
     >>> build_adapter_from_spec("coding:evalplus/humanevalplus:test")
-    >>> build_adapter_from_spec("math:gsm8k:main:test")
-    >>> build_adapter_from_spec("mcq:allenai/ai2_arc:ARC-Challenge:test")
+    >>> build_adapter_from_spec("math:gsm8k:main")
+    >>> build_adapter_from_spec("math:gsm8k:main:train:test")
+    >>> build_adapter_from_spec("mcq:allenai/ai2_arc:ARC-Challenge")
 
     The spec is intentionally permissive about the number of segments so the
     notebooks accept either a bare ``"coding"`` shorthand or a fully-qualified
@@ -65,7 +88,8 @@ def build_adapter_from_spec(spec: str) -> TaskAdapter:
     if not spec or ":" not in spec and spec not in TASK_REGISTRY:
         raise ValueError(
             f"Spec must be one of {sorted(TASK_REGISTRY)} or "
-            f"'<name>:<dataset>[:<config>[:<split>]]'; got {spec!r}"
+            f"'<name>:<dataset>[:<config>[:<train_split>[:<test_split>]]]'; "
+            f"got {spec!r}"
         )
 
     parts = spec.split(":")
@@ -80,7 +104,7 @@ def build_adapter_from_spec(spec: str) -> TaskAdapter:
         if len(parts) >= 2 and parts[1]:
             kwargs["dataset_name"] = parts[1]
         if len(parts) >= 3 and parts[2]:
-            kwargs["split"] = parts[2]
+            kwargs["test_split"] = parts[2]
         return build_adapter(name, **kwargs)
 
     if name in ("math", "mcq"):
@@ -89,8 +113,12 @@ def build_adapter_from_spec(spec: str) -> TaskAdapter:
             kwargs["dataset_name"] = parts[1]
         if len(parts) >= 3 and parts[2]:
             kwargs["config"] = parts[2]
-        if len(parts) >= 4 and parts[3]:
-            kwargs["split"] = parts[3]
+        if len(parts) >= 4:
+            # An empty 4th segment (e.g. "math:gsm8k:main::test") explicitly
+            # disables the native train split and triggers the seeded fallback.
+            kwargs["train_split"] = parts[3] if parts[3] else None
+        if len(parts) >= 5 and parts[4]:
+            kwargs["test_split"] = parts[4]
         return build_adapter(name, **kwargs)
 
     raise KeyError(name)  # pragma: no cover -- guarded above

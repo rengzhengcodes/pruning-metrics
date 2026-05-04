@@ -139,6 +139,70 @@ class TaskAdapter(Protocol):
         ...
 
 
+def native_or_seeded_split(
+    train_records: Sequence[TaskRecord] | None,
+    test_records: Sequence[TaskRecord] | None,
+    *,
+    seed: int = 65320,
+    train_frac: float = 0.8,
+    explicit_train_ids: Sequence[str] | None = None,
+    explicit_test_ids: Sequence[str] | None = None,
+) -> tuple[list[TaskRecord], list[TaskRecord]]:
+    """Route between native train/test splits and the seeded fallback.
+
+    Adapters that load from datasets with native splits (GSM8K, ARC) call
+    this helper with both ``train_records`` and ``test_records`` populated;
+    HumanEval+ (single split) passes ``train_records=None`` and the records
+    are seeded-shuffled into 80/20 partitions.
+
+    Parameters
+    ----------
+    train_records:
+        Records from the adapter's configured **train** Hub split (e.g.
+        split name ``"train"``), or ``None`` when the dataset exposes only a
+        single split for evaluation (no ``train`` key on the Hub). This is
+        unrelated to a ``validation`` split: many benchmarks ship ``train``
+        + ``test`` only, and we never require ``validation``. When
+        ``train_records`` is ``None``, ``test_records`` is partitioned via
+        :func:`deterministic_split`.
+    test_records:
+        Native (or only) split. Always required.
+    seed, train_frac:
+        Forwarded to :func:`deterministic_split` when falling back. Ignored
+        (logged via the return value) when both native splits are present
+        and no explicit overrides are supplied.
+    explicit_train_ids, explicit_test_ids:
+        Optional task-id overrides. Forces the seeded fallback over the
+        union of both partitions so the override semantics stay uniform.
+
+    Returns
+    -------
+    tuple[list[TaskRecord], list[TaskRecord]]
+        ``(train_records, test_records)``. With native splits and no
+        overrides, partitions are returned in dataset order.
+    """
+
+    if test_records is None:
+        raise ValueError("test_records must be provided")
+
+    has_overrides = bool(explicit_train_ids) or bool(explicit_test_ids)
+    if train_records is not None and not has_overrides:
+        # Native split path: dataset order, ignore seed/train_frac.
+        return list(train_records), list(test_records)
+
+    pool: list[TaskRecord] = list(test_records)
+    if train_records is not None:
+        pool = list(train_records) + pool
+
+    return deterministic_split(
+        pool,
+        seed=seed,
+        train_frac=train_frac,
+        explicit_train_ids=explicit_train_ids,
+        explicit_test_ids=explicit_test_ids,
+    )
+
+
 def deterministic_split(
     records: Sequence[TaskRecord],
     *,

@@ -276,14 +276,20 @@ def build_notebook_02() -> None:
               bf16; needs `p4de.24xlarge` or `p5.48xlarge`). Use
               `Qwen/Qwen2-1.5B-Instruct` for a smoke pass on `g5.xlarge`.
             * `CALIBRATION_DATASET_SPEC`: any task-adapter spec. Examples:
-              `coding`, `coding:evalplus/humanevalplus:test`,
-              `math:gsm8k:main:train`, `mcq:allenai/ai2_arc:ARC-Challenge:train`.
+              `coding` (HumanEval+; seeded 80/20 fallback over the test
+              split), `math:gsm8k:main` (uses GSM8K's native train + test
+              splits), `mcq:allenai/ai2_arc:ARC-Challenge` (uses ARC's
+              native train + test splits).
             * `PRUNING_LEVELS`: percent levels recorded in the manifest;
               the actual pruning is re-derived deterministically per level
               by notebooks 3 and 4.
-            * `SPLIT_SEED`, `TRAIN_FRAC`: deterministic 80/20 partition.
+            * `SPLIT_SEED`, `TRAIN_FRAC`: only used for the seeded fallback
+              when a dataset has no native train split (e.g. HumanEval+),
+              and for reproducible truncation when `MAX_CALIBRATION_SAMPLES`
+              caps a native train set.
             * `EXPLICIT_TRAIN_IDS` / `EXPLICIT_TEST_IDS`: optional task-id
-              overrides; missing ids fall back to the seeded shuffle.
+              overrides; force the seeded splitter and missing ids fall
+              back to the shuffle.
             * `INSTANCE_TYPE_PRIORITY` and `REGION_PRIORITY`: search order
               for the spot capacity probe.
             """
@@ -377,8 +383,8 @@ def build_notebook_02() -> None:
                 "BASE_MODEL_ID": BASE_MODEL_ID,
                 "CALIBRATION_DATASET_SPEC": CALIBRATION_DATASET_SPEC,
                 "PRUNING_LEVELS": ",".join(str(level) for level in PRUNING_LEVELS),
-                "HUMANEVAL_SPLIT_SEED": SPLIT_SEED,
-                "HUMANEVAL_TRAIN_FRAC": TRAIN_FRAC,
+                "SPLIT_SEED": SPLIT_SEED,
+                "TRAIN_FRAC": TRAIN_FRAC,
                 "MAX_CALIBRATION_SAMPLES": MAX_CALIBRATION_SAMPLES,
                 "MAX_CALIBRATION_TOKENS": MAX_CALIBRATION_TOKENS,
             }
@@ -516,9 +522,11 @@ def build_notebook_03() -> None:
             * `PRUNING_ARTIFACT_URI`: full S3 URI from notebook 2.
             * `EVAL_DATASET_SPEC`: pick any registered adapter; defaults to
               the calibration dataset for parity. Examples:
-              `coding:evalplus/humanevalplus:test`,
-              `math:gsm8k:main:test`,
-              `mcq:allenai/ai2_arc:ARC-Challenge:test`.
+              `coding:evalplus/humanevalplus:test` (HumanEval+ test),
+              `math:gsm8k:main` (GSM8K Hub ``train`` + ``test``; there is no
+              separate ``validation`` split on ``main``, and the adapters
+              never assume one),
+              `mcq:allenai/ai2_arc:ARC-Challenge` (ARC Hub ``train`` + ``test``).
             * `EVAL_LEVELS`: subset of `manifest.pruning_levels`.
             * `GENERATION_SEED`: feeds `torch.manual_seed`. Greedy decoding
               is otherwise deterministic; the seed exists so anyone curious

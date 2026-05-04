@@ -25,13 +25,12 @@ side concerns: capacity probing, monitoring, debugging, recovery.
 | [`run_pruning_calibration.py`](run_pruning_calibration.py) | Notebook 2's worker. Loads model once -> WANDA stats over the train split of the chosen calibration dataset -> uploads `wanda_stats.pt` + `manifest.json` + `split.json` + `run_metadata.json`. Fast (~5-25 min). |
 | [`run_freeform_eval.py`](run_freeform_eval.py) | Notebook 3's worker. Downloads the calibration artifact, loads the base model, and per requested pruning level: restore -> apply per-row WANDA -> generate the test split greedily -> task-adapter `verify` -> incremental S3 sync of `level=NN/eval_records.jsonl` and a rolling `summary.json`. |
 | [`run_teacher_forced.py`](run_teacher_forced.py) | Notebook 4's worker. Same artifact + adapter + level sweep, but instead of free-form generation it runs `compute_teacher_forced_logprobs` for `NUM_TF_SAMPLES` records picked deterministically using `TF_SEED`. Outputs `level=NN/sample=KKK_task=.../per_token.json`. |
-| [`run_qwen_pruning_experiment.py`](run_qwen_pruning_experiment.py) | Legacy monolithic runner from the first iteration. Kept available as `--runner full_pipeline` for back-compat; the four-notebook flow does not use it. |
 
 The launcher's user-data renders the chosen runner via:
 
 ```bash
 python infra/ec2/launch_gpu_instance.py \
-    --runner {pruning_calibration|freeform_eval|teacher_forced|full_pipeline} \
+    --runner {pruning_calibration|freeform_eval|teacher_forced} \
     --runner-env-json '{"BASE_MODEL_ID": "...", "PRUNING_LEVELS": "0,20,40,60,80", ...}'
 ```
 

@@ -1,9 +1,15 @@
 """Math-task adapter (GSM8K).
 
-GSM8K (Cobbe et al. 2021, https://huggingface.co/datasets/gsm8k) ships
-chain-of-thought solutions terminated by a literal ``####`` followed by the
-final numeric answer. Verification therefore extracts the model's last
-plausible numeric token and compares it against the gold final number.
+GSM8K (Cobbe et al. 2021, https://huggingface.co/datasets/gsm8k) on the Hub
+``main`` config exposes ``train`` and ``test`` splits only (7473 + 1319
+rows); there is no ``validation`` split, and this adapter does not require
+one for any GSM8K-shaped dataset you point it at—calibration uses the
+configured train split name and evaluation uses the test split name.
+
+GSM8K rows use chain-of-thought solutions terminated by a literal ``####``
+followed by the final numeric answer. Verification therefore extracts the
+model's last plausible numeric token and compares it against the gold final
+number.
 
 Notation supported by ``_extract_numeric``:
 
@@ -27,7 +33,7 @@ from pruning_metrics.evals.tasks.base import (
     TaskAdapter,
     TaskRecord,
     VerificationOutcome,
-    deterministic_split,
+    native_or_seeded_split,
 )
 
 _GSM8K_GOLD_DIVIDER = "####"
@@ -45,9 +51,14 @@ class MathTaskAdapter(TaskAdapter):
         Hugging Face dataset name. Default ``gsm8k``.
     config:
         Dataset config (``main`` or ``socratic``). Default ``main``.
-    split:
-        Split to load. Default ``test``; downstream notebooks split this
-        further into 80/20 train/test for calibration vs evaluation.
+    train_split:
+        Hugging Face split name for calibration rows. Default ``"train"``
+        (GSM8K ``main`` has 7473 rows there). Pass ``None`` to force the
+        seeded 80/20 fallback over ``test_split`` when the dataset exposes
+        only one split (no named train partition on the Hub).
+    test_split:
+        Native test split name. Default ``"test"`` (GSM8K ships 1319 rows
+        there).
     keep_chain_of_thought:
         When ``True`` (default), ``target_text`` is the full canonical
         solution including the chain-of-thought and ``#### N`` divider so
@@ -61,23 +72,26 @@ class MathTaskAdapter(TaskAdapter):
         self,
         dataset_name: str = "gsm8k",
         config: str = "main",
-        split: str = "test",
+        train_split: str | None = "train",
+        test_split: str = "test",
         keep_chain_of_thought: bool = True,
     ) -> None:
         self.dataset_name = dataset_name
         self.config = config
-        self.split = split
+        self.train_split = train_split
+        self.test_split = test_split
         self.keep_chain_of_thought = keep_chain_of_thought
-        self.dataset_spec = f"math:{dataset_name}:{config}:{split}"
-        self._records: list[TaskRecord] | None = None
+        split_label = (
+            f"{train_split}+{test_split}" if train_split else test_split
+        )
+        self.dataset_spec = f"math:{dataset_name}:{config}:{split_label}"
+        self._train_records: list[TaskRecord] | None = None
+        self._test_records: list[TaskRecord] | None = None
 
-    def load_records(self) -> list[TaskRecord]:
-        """Materialise GSM8K rows as :class:`TaskRecord` objects."""
+    def _load_split(self, split: str) -> list[TaskRecord]:
+        """Materialise rows from a single Hugging Face split."""
 
-        if self._records is not None:
-            return list(self._records)
-
-        rows = load_dataset(self.dataset_name, self.config, split=self.split)
+        rows = load_dataset(self.dataset_name, self.config, split=split)
         records: list[TaskRecord] = []
         for index, row in enumerate(rows):
             question = str(row["question"])
@@ -92,7 +106,7 @@ class MathTaskAdapter(TaskAdapter):
             )
             records.append(
                 TaskRecord(
-                    task_id=f"gsm8k/{self.split}/{index:05d}",
+                    task_id=f"gsm8k/{split}/{index:05d}",
                     prompt=_format_gsm8k_prompt(question),
                     target_text=target_text,
                     metadata={
@@ -102,8 +116,19 @@ class MathTaskAdapter(TaskAdapter):
                     },
                 )
             )
-        self._records = records
-        return list(records)
+        return records
+
+    def load_records(self) -> list[TaskRecord]:
+        """Concatenate train + test records (train first when available)."""
+
+        if self._test_records is None:
+            self._test_records = self._load_split(self.test_split)
+        if self.train_split is not None and self._train_records is None:
+            self._train_records = self._load_split(self.train_split)
+
+        if self._train_records is not None:
+            return list(self._train_records) + list(self._test_records)
+        return list(self._test_records)
 
     def train_test_split(
         self,
@@ -112,8 +137,11 @@ class MathTaskAdapter(TaskAdapter):
         explicit_train_ids: Sequence[str] | None = None,
         explicit_test_ids: Sequence[str] | None = None,
     ) -> tuple[list[TaskRecord], list[TaskRecord]]:
-        return deterministic_split(
-            self.load_records(),
+        # Trigger lazy load so both splits are populated.
+        self.load_records()
+        return native_or_seeded_split(
+            self._train_records,
+            self._test_records,
             seed=seed,
             train_frac=train_frac,
             explicit_train_ids=explicit_train_ids,

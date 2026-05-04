@@ -1,8 +1,8 @@
 """Coding-task adapter (HumanEval+, MBPP-shaped data).
 
 Wraps the existing :class:`HumanEvalPlusDatasetLoader` and
-:func:`verify_task_solution` so the new task-adapter layer can drive the same
-subprocess-based pass@1 pipeline that the legacy notebook relied on.
+:func:`verify_task_solution` so the task-adapter layer can drive the same
+subprocess-based pass@1 verification used by notebook 3.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pruning_metrics.evals.tasks.base import (
     TaskAdapter,
     TaskRecord,
     VerificationOutcome,
-    deterministic_split,
+    native_or_seeded_split,
 )
 
 
@@ -29,8 +29,13 @@ class CodingTaskAdapter(TaskAdapter):
     ----------
     dataset_name:
         ``datasets.load_dataset`` name. Default ``evalplus/humanevalplus``.
-    split:
-        Dataset split (default ``test``; HumanEval+ ships only that split).
+    train_split:
+        Native train split name. Default ``None`` because HumanEval+ ships
+        only a ``test`` split; the seeded 80/20 fallback in
+        :func:`pruning_metrics.evals.tasks.base.native_or_seeded_split`
+        produces the calibration partition.
+    test_split:
+        Dataset split that holds all records. Default ``"test"``.
 
     Notes
     -----
@@ -46,27 +51,39 @@ class CodingTaskAdapter(TaskAdapter):
     def __init__(
         self,
         dataset_name: str = "evalplus/humanevalplus",
-        split: str = "test",
+        train_split: str | None = None,
+        test_split: str = "test",
     ) -> None:
         self.dataset_name = dataset_name
-        self.split = split
-        self.dataset_spec = f"coding:{dataset_name}:{split}"
-        self._records: list[TaskRecord] | None = None
+        self.train_split = train_split
+        self.test_split = test_split
+        split_label = (
+            f"{train_split}+{test_split}" if train_split else test_split
+        )
+        self.dataset_spec = f"coding:{dataset_name}:{split_label}"
+        self._train_records: list[TaskRecord] | None = None
+        self._test_records: list[TaskRecord] | None = None
 
-    def load_records(self) -> list[TaskRecord]:
-        """Materialise all HumanEval+ tasks as :class:`TaskRecord` objects."""
-
-        if self._records is not None:
-            return list(self._records)
+    def _load_split(self, split: str) -> list[TaskRecord]:
+        """Materialise records from a single HumanEval+ split."""
 
         loader = HumanEvalPlusDatasetLoader(
-            dataset_name=self.dataset_name, split=self.split
+            dataset_name=self.dataset_name, split=split
         )
         tasks = loader.load_tasks()
-        records = [self._to_record(task) for task in tasks]
-        # Cache so repeated calls (notebook + runner) avoid re-downloading.
-        self._records = records
-        return list(records)
+        return [self._to_record(task) for task in tasks]
+
+    def load_records(self) -> list[TaskRecord]:
+        """Concatenate train + test records (train first when available)."""
+
+        if self._test_records is None:
+            self._test_records = self._load_split(self.test_split)
+        if self.train_split is not None and self._train_records is None:
+            self._train_records = self._load_split(self.train_split)
+
+        if self._train_records is not None:
+            return list(self._train_records) + list(self._test_records)
+        return list(self._test_records)
 
     def train_test_split(
         self,
@@ -75,8 +92,11 @@ class CodingTaskAdapter(TaskAdapter):
         explicit_train_ids: Sequence[str] | None = None,
         explicit_test_ids: Sequence[str] | None = None,
     ) -> tuple[list[TaskRecord], list[TaskRecord]]:
-        return deterministic_split(
-            self.load_records(),
+        # Trigger lazy load so the (single or paired) splits are populated.
+        self.load_records()
+        return native_or_seeded_split(
+            self._train_records,
+            self._test_records,
             seed=seed,
             train_frac=train_frac,
             explicit_train_ids=explicit_train_ids,
@@ -86,12 +106,11 @@ class CodingTaskAdapter(TaskAdapter):
     def build_inference_prompt(self, record: TaskRecord) -> str:
         """Wrap the raw HumanEval+ prompt with an instruction.
 
-        The raw prompt is just a partial ``def`` plus a docstring; on its own
-        a model would tend to continue with a function body and the verifier
-        wouldn't find a complete callable. The wrapper mirrors the
-        long-running :func:`pruning_metrics.evals.coding.pipeline.build_coding_prompt`
-        helper used by the legacy notebook so the smoke-test pass@1 numbers
-        line up with prior baselines.
+        The raw prompt is just a partial ``def`` plus a docstring; on its
+        own a model would tend to continue with a function body and the
+        verifier wouldn't find a complete callable. This wrapper asks for
+        a complete Python definition so the verifier can resolve the
+        named entry point.
         """
 
         entry_point = record.metadata.get("entry_point", "solution")

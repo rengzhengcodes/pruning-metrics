@@ -19,7 +19,7 @@ from pruning_metrics.evals.tasks.base import (
     TaskAdapter,
     TaskRecord,
     VerificationOutcome,
-    deterministic_split,
+    native_or_seeded_split,
 )
 
 
@@ -31,28 +31,31 @@ class MyAdapter(TaskAdapter):
     def __init__(
         self,
         dataset_name: str = "<hf-dataset-name>",
-        split: str = "test",
+        train_split: str | None = "train",  # None -> seeded fallback
+        test_split: str = "test",
     ) -> None:
         self.dataset_name = dataset_name
-        self.split = split
-        self.dataset_spec = f"my_task:{dataset_name}:{split}"
-        self._records: list[TaskRecord] | None = None
+        self.train_split = train_split
+        self.test_split = test_split
+        split_label = (
+            f"{train_split}+{test_split}" if train_split else test_split
+        )
+        self.dataset_spec = f"my_task:{dataset_name}:{split_label}"
+        self._train_records: list[TaskRecord] | None = None
+        self._test_records: list[TaskRecord] | None = None
+
+    def _load_split(self, split: str) -> list[TaskRecord]:
+        # Read the HF dataset, build TaskRecord objects for ``split``.
+        ...
 
     def load_records(self) -> list[TaskRecord]:
-        if self._records is not None:
-            return list(self._records)
-        # ... read the HF dataset, build TaskRecord objects ...
-        records = [
-            TaskRecord(
-                task_id="...",
-                prompt="...",          # the natural prefix for teacher forcing
-                target_text="...",     # the gold continuation
-                metadata={...},        # free-form
-            )
-            for ...
-        ]
-        self._records = records
-        return list(records)
+        if self._test_records is None:
+            self._test_records = self._load_split(self.test_split)
+        if self.train_split is not None and self._train_records is None:
+            self._train_records = self._load_split(self.train_split)
+        if self._train_records is not None:
+            return list(self._train_records) + list(self._test_records)
+        return list(self._test_records)
 
     def train_test_split(
         self,
@@ -61,8 +64,10 @@ class MyAdapter(TaskAdapter):
         explicit_train_ids: Sequence[str] | None = None,
         explicit_test_ids: Sequence[str] | None = None,
     ) -> tuple[list[TaskRecord], list[TaskRecord]]:
-        return deterministic_split(
-            self.load_records(),
+        self.load_records()  # populate both partitions lazily
+        return native_or_seeded_split(
+            self._train_records,
+            self._test_records,
             seed=seed,
             train_frac=train_frac,
             explicit_train_ids=explicit_train_ids,
@@ -70,8 +75,8 @@ class MyAdapter(TaskAdapter):
         )
 
     def build_inference_prompt(self, record: TaskRecord) -> str:
-        # If `record.prompt` already includes any required instruction text
-        # for free-form generation, just return it. Otherwise wrap it here.
+        # If ``record.prompt`` already includes any required instruction
+        # text for free-form generation, just return it. Otherwise wrap.
         return record.prompt
 
     def verify(
@@ -80,11 +85,21 @@ class MyAdapter(TaskAdapter):
         generated_text: str,
         timeout_seconds: float = 10.0,
     ) -> VerificationOutcome:
-        # Implement task-specific scoring. Must return a VerificationOutcome
-        # with status in {"pass", "fail", "timeout", "runtime_error",
+        # Task-specific scoring. Must return a VerificationOutcome with
+        # status in {"pass", "fail", "timeout", "runtime_error",
         # "parse_error"}.
         ...
 ```
+
+`native_or_seeded_split` is the shared helper in `tasks/base.py` that
+routes between native splits and the seeded 80/20 fallback:
+
+* If both `train_split` and `test_split` are configured (and no explicit
+  task-id overrides are passed), it returns the natively-loaded
+  partitions verbatim, ignoring `seed` and `train_frac`.
+* If `train_split` is `None`, or if the caller forces task-id overrides,
+  it falls back to `deterministic_split` -- a stable seeded shuffle
+  keyed by `seed` over the union of records.
 
 Then register it in
 [`src/pruning_metrics/evals/tasks/registry.py`](../src/pruning_metrics/evals/tasks/registry.py):
@@ -100,9 +115,43 @@ TASK_REGISTRY = {
 }
 ```
 
-The notebooks now accept `CALIBRATION_DATASET_SPEC = "my_task"` (or
-`"my_task:<dataset>:<split>"` for fully-qualified) without any other
-changes.
+The notebooks now accept `CALIBRATION_DATASET_SPEC = "my_task"` (or any
+of the longer spec shapes) without any other changes.
+
+## Spec grammar (`build_adapter_from_spec`)
+
+Each adapter's spec parser is one-line in
+[`registry.py`](../src/pruning_metrics/evals/tasks/registry.py); the
+project ships three:
+
+| Adapter | Spec grammar | Default behaviour |
+|---------|--------------|-------------------|
+| `coding` | `coding[:<dataset>[:<test_split>]]` | HumanEval+, single test split, seeded 80/20 fallback for calibration. |
+| `math` | `math[:<dataset>[:<config>[:<train_split>[:<test_split>]]]]` | Defaults to `math:gsm8k:main:train:test` (native splits). Pass `""` for `train_split` to force the seeded fallback. |
+| `mcq` | `mcq[:<dataset>[:<config>[:<train_split>[:<test_split>]]]]` | Defaults to `mcq:allenai/ai2_arc:ARC-Challenge:train:test` (native splits). |
+
+Examples:
+
+```python
+build_adapter_from_spec("coding")                                # HumanEval+
+build_adapter_from_spec("math:gsm8k:main")                       # GSM8K native splits
+build_adapter_from_spec("math:gsm8k:main::test")                 # GSM8K test only -> seeded fallback
+build_adapter_from_spec("mcq:allenai/ai2_arc:ARC-Challenge")     # ARC native splits
+```
+
+## Train, test, and validation splits
+
+GSM8K (`gsm8k`, config `main`) and ARC-Challenge expose Hub splits named
+`train` and `test` by default; neither ships a separate `validation` split
+on those configs, and the built-in adapters **never** assume one exists.
+Calibration rows come from `train_split` (default `"train"`) and
+evaluation rows from `test_split` (default `"test"`). If you point
+`MathTaskAdapter` or `MCQTaskAdapter` at another dataset that only has
+`train` + `test`, keep the defaults; if a dataset adds `validation` and
+you want to calibrate on it, pass that split name explicitly when
+constructing the adapter (or extend the spec parser). Datasets with only a
+single public split should set `train_split=None` so the seeded fallback
+partitions that split (same pattern as HumanEval+).
 
 ## Two flavours of "prompt"
 
@@ -159,9 +208,9 @@ wraps the existing HumanEval+ helpers. Highlights:
 * `metadata = {"entry_point": ..., "test": ...}` so `verify` can
   reconstruct a HumanEval+ task and forward to the existing subprocess
   test harness.
-* `build_inference_prompt` injects the instruction wrapper from
-  `pipeline.build_coding_prompt` so the model emits a complete callable
-  rather than just a function body.
+* `build_inference_prompt` injects an instruction wrapper that asks the
+  model to emit a complete callable rather than just a function body, so
+  the verifier can find the entry-point function.
 
 ## Worked example: the GSM8K adapter
 

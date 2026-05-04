@@ -33,6 +33,7 @@ def test_build_adapter_unknown_name() -> None:
 def test_build_adapter_from_spec_bare_name() -> None:
     adapter = build_adapter_from_spec("coding")
     assert isinstance(adapter, CodingTaskAdapter)
+    # HumanEval+ ships only a test split; train_split defaults to None.
     assert adapter.dataset_spec == "coding:evalplus/humanevalplus:test"
 
 
@@ -40,21 +41,58 @@ def test_build_adapter_from_spec_full_coding() -> None:
     adapter = build_adapter_from_spec("coding:evalplus/humanevalplus:test")
     assert isinstance(adapter, CodingTaskAdapter)
     assert adapter.dataset_name == "evalplus/humanevalplus"
-    assert adapter.split == "test"
+    assert adapter.test_split == "test"
+    assert adapter.train_split is None
 
 
-def test_build_adapter_from_spec_full_math() -> None:
-    adapter = build_adapter_from_spec("math:gsm8k:main:test")
+def test_build_adapter_from_spec_native_default_math() -> None:
+    """Spec ``math:gsm8k:main`` uses native train/test splits by default."""
+
+    adapter = build_adapter_from_spec("math:gsm8k:main")
     assert isinstance(adapter, MathTaskAdapter)
     assert adapter.dataset_name == "gsm8k"
     assert adapter.config == "main"
-    assert adapter.split == "test"
+    assert adapter.train_split == "train"
+    assert adapter.test_split == "test"
+    assert adapter.dataset_spec == "math:gsm8k:main:train+test"
+
+
+def test_build_adapter_from_spec_full_math() -> None:
+    """5-segment spec lets users override both native splits explicitly."""
+
+    adapter = build_adapter_from_spec("math:gsm8k:main:train:test")
+    assert isinstance(adapter, MathTaskAdapter)
+    assert adapter.dataset_name == "gsm8k"
+    assert adapter.config == "main"
+    assert adapter.train_split == "train"
+    assert adapter.test_split == "test"
+
+
+def test_build_adapter_from_spec_math_disable_train_split() -> None:
+    """Empty 4th segment forces the seeded fallback over the test split."""
+
+    adapter = build_adapter_from_spec("math:gsm8k:main::test")
+    assert isinstance(adapter, MathTaskAdapter)
+    assert adapter.train_split is None
+    assert adapter.test_split == "test"
+
+
+def test_build_adapter_from_spec_native_default_mcq() -> None:
+    adapter = build_adapter_from_spec("mcq:allenai/ai2_arc:ARC-Challenge")
+    assert isinstance(adapter, MCQTaskAdapter)
+    assert adapter.config == "ARC-Challenge"
+    assert adapter.train_split == "train"
+    assert adapter.test_split == "test"
 
 
 def test_build_adapter_from_spec_full_mcq() -> None:
-    adapter = build_adapter_from_spec("mcq:allenai/ai2_arc:ARC-Challenge:test")
+    adapter = build_adapter_from_spec(
+        "mcq:allenai/ai2_arc:ARC-Challenge:train:test"
+    )
     assert isinstance(adapter, MCQTaskAdapter)
     assert adapter.config == "ARC-Challenge"
+    assert adapter.train_split == "train"
+    assert adapter.test_split == "test"
 
 
 def test_build_adapter_from_spec_invalid() -> None:
