@@ -447,10 +447,22 @@ def apply_wanda_pruning(
     stats: dict[str, Any],
     prune_ratio: float,
 ) -> None:
-    """In-place WANDA layer-wise unstructured pruning.
+    """In-place WANDA per-output-row unstructured pruning.
 
-    Score is ``|W| * RMS(activation)`` per weight; the lowest-scoring
-    ``prune_ratio`` fraction within each Linear layer is set to zero.
+    Implements the comparison group used by Sun et al., "A Simple and
+    Effective Pruning Approach for Large Language Models" (2023): for each
+    Linear layer's weight ``W (out_features, in_features)`` and per-input
+    activation RMS ``rms (in_features,)``, score ``S = |W| * rms`` per entry,
+    then for **each output row independently** prune the lowest-scoring
+    ``prune_ratio`` fraction of entries.
+
+    Why per-row rather than per-layer global thresholding:
+
+    * It matches the canonical WANDA algorithm (groups along the input axis).
+    * ``torch.quantile`` cannot ingest the full Qwen2-72B ``lm_head`` score
+      matrix (~1.2 B elements) in one call — it raises
+      ``RuntimeError: quantile() input tensor is too large``. The per-row
+      formulation uses ``torch.topk(..., dim=1)`` which has no such limit.
     """
 
     import torch
@@ -466,9 +478,19 @@ def apply_wanda_pruning(
             continue
         channel_rms = stats[name].to(module.weight.device)
         weight = module.weight.data
-        score = weight.abs() * channel_rms.unsqueeze(0)
-        threshold = torch.quantile(score.float().flatten(), prune_ratio)
-        weight[score <= threshold] = 0
+        # Score lives in float32 to avoid bf16 ties at zero magnitude.
+        score = (weight.abs().float()) * channel_rms.float().unsqueeze(0)
+        in_features = weight.shape[1]
+        num_to_prune = int(round(prune_ratio * in_features))
+        if num_to_prune <= 0:
+            continue
+        # Indices (per row) of the bottom-k scoring weights to zero out.
+        _, prune_indices = torch.topk(
+            score, k=num_to_prune, dim=1, largest=False, sorted=False
+        )
+        mask = torch.zeros_like(weight, dtype=torch.bool)
+        mask.scatter_(1, prune_indices, True)
+        weight[mask] = 0
 
 
 # ---------------------------------------------------------------------------

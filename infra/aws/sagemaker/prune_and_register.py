@@ -207,13 +207,21 @@ def apply_wanda_pruning(
     stats: dict[str, torch.Tensor],
     prune_ratio: float,
 ) -> None:
-    """Apply layer-wise WANDA pruning to linear weights.
+    """Apply per-output-row WANDA pruning to linear weights.
+
+    Implements the canonical WANDA comparison group (Sun et al. 2023): for each
+    Linear weight ``W (out_features, in_features)`` and the per-input
+    activation RMS ``rms (in_features,)`` collected at calibration time, we
+    score ``S_{ij} = |W_{ij}| * rms_j`` and, for each output row independently,
+    zero the lowest-scoring ``prune_ratio`` fraction of entries.
 
     Notes
     -----
-    This implementation uses layer-wise thresholding for practicality. Each linear
-    layer computes the WANDA score ``abs(weight) * rms(input_channel)`` and prunes
-    the bottom ``prune_ratio`` fraction.
+    The earlier global-threshold implementation could not run on Qwen2-72B
+    because ``torch.quantile`` rejects the ~1.2 B-element ``lm_head`` score
+    tensor as "input tensor is too large". Per-row pruning uses
+    ``torch.topk(..., dim=1)`` which has no such size limit and matches the
+    paper's recommended grouping.
     """
 
     if prune_ratio <= 0.0:
@@ -229,9 +237,16 @@ def apply_wanda_pruning(
 
         channel_rms = stats[name].to(module.weight.device)
         weight = module.weight.data
-        score = weight.abs() * channel_rms.unsqueeze(0)
-        threshold = torch.quantile(score.float().flatten(), prune_ratio)
-        mask = score <= threshold
+        score = (weight.abs().float()) * channel_rms.float().unsqueeze(0)
+        in_features = weight.shape[1]
+        num_to_prune = int(round(prune_ratio * in_features))
+        if num_to_prune <= 0:
+            continue
+        _, prune_indices = torch.topk(
+            score, k=num_to_prune, dim=1, largest=False, sorted=False
+        )
+        mask = torch.zeros_like(weight, dtype=torch.bool)
+        mask.scatter_(1, prune_indices, True)
         weight[mask] = 0
 
 
