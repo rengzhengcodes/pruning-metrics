@@ -473,13 +473,36 @@ def build_notebook_02() -> None:
             """
             ## Hand-off to notebooks 3 & 4
 
-            Copy the artifact URI below into the configuration cell of either
-            downstream notebook. The same artifact can be reused across many
-            downstream evaluations on different datasets.
+            Persist the artifact URI into `.env` so notebooks 3 and 4 pick it
+            up automatically on next bootstrap (`load_dotenv` in cell 1).
+            The same artifact can be reused across many downstream evaluations
+            on different datasets.
             """
         ),
         _code(
             """
+            def _upsert_env_key(env_path, key, value):
+                env_path = Path(env_path)
+                lines = []
+                if env_path.exists():
+                    lines = env_path.read_text(encoding="utf-8").splitlines()
+                replaced = False
+                out = []
+                for line in lines:
+                    if line.startswith(f"{key}="):
+                        out.append(f"{key}={value}")
+                        replaced = True
+                    else:
+                        out.append(line)
+                if not replaced:
+                    if out and out[-1].strip():
+                        out.append("")
+                    out.append(f"{key}={value}")
+                env_path.write_text("\\n".join(out).rstrip() + "\\n", encoding="utf-8")
+
+            os.environ["PRUNING_ARTIFACT_URI"] = PRUNING_ARTIFACT_URI
+            _upsert_env_key(REPO_ROOT / ".env", "PRUNING_ARTIFACT_URI", PRUNING_ARTIFACT_URI)
+            print("Persisted PRUNING_ARTIFACT_URI to", REPO_ROOT / ".env")
             print("PRUNING_ARTIFACT_URI =", repr(PRUNING_ARTIFACT_URI))
             """
         ),
@@ -537,16 +560,38 @@ def build_notebook_03() -> None:
         _code(
             """
             import json
+            import boto3
 
             AWS_PROFILE = os.environ.get("AWS_PROFILE", "rengz")
             RESULTS_BUCKET = os.environ.get(
                 "RESULTS_BUCKET", "pruning-metrics-results-414266451290"
             )
 
-            PRUNING_ARTIFACT_URI = (
-                # paste the URI printed at the end of notebook 2 here:
-                "s3://pruning-metrics-results-414266451290/pruning_artifacts/<run_id>/"
-            )
+            def _discover_latest_pruning_artifact_uri(results_bucket, aws_profile):
+                session = boto3.session.Session(profile_name=aws_profile)
+                s3 = session.client("s3")
+                paginator = s3.get_paginator("list_objects_v2")
+                run_ids = set()
+                for page in paginator.paginate(Bucket=results_bucket, Prefix="pruning_artifacts/"):
+                    for entry in page.get("Contents", []) or []:
+                        key = entry["Key"]
+                        parts = key.split("/")
+                        if len(parts) >= 3 and parts[0] == "pruning_artifacts":
+                            run_ids.add(parts[1])
+                if not run_ids:
+                    return ""
+                latest = sorted(run_ids)[-1]
+                return f"s3://{results_bucket}/pruning_artifacts/{latest}/"
+
+            PRUNING_ARTIFACT_URI = os.environ.get("PRUNING_ARTIFACT_URI", "").strip()
+            if "<" in PRUNING_ARTIFACT_URI or ">" in PRUNING_ARTIFACT_URI:
+                PRUNING_ARTIFACT_URI = ""
+            if not PRUNING_ARTIFACT_URI:
+                PRUNING_ARTIFACT_URI = _discover_latest_pruning_artifact_uri(
+                    RESULTS_BUCKET, AWS_PROFILE
+                )
+            if not PRUNING_ARTIFACT_URI:
+                PRUNING_ARTIFACT_URI = "s3://pruning-metrics-results-414266451290/pruning_artifacts/<run_id>/"
             EVAL_DATASET_SPEC = ""  # empty -> reuse the artifact's calibration spec
             EVAL_LEVELS = [0, 20, 40, 60, 80]
             GENERATION_SEED = 65320
@@ -566,8 +611,8 @@ def build_notebook_03() -> None:
             }, indent=2))
             assert PRUNING_ARTIFACT_URI.startswith("s3://"), "Set PRUNING_ARTIFACT_URI."
             assert "<" not in PRUNING_ARTIFACT_URI and ">" not in PRUNING_ARTIFACT_URI, (
-                "PRUNING_ARTIFACT_URI must be the real URI from notebook 2, not a "
-                "placeholder (remove <run_id> and use the printed timestamp id)."
+                "Could not resolve PRUNING_ARTIFACT_URI. Run notebook 2 to completion "
+                "(or set PRUNING_ARTIFACT_URI in .env) and re-run this cell."
             )
             """
         ),
@@ -842,16 +887,38 @@ def build_notebook_04() -> None:
         _code(
             """
             import json
+            import boto3
 
             AWS_PROFILE = os.environ.get("AWS_PROFILE", "rengz")
             RESULTS_BUCKET = os.environ.get(
                 "RESULTS_BUCKET", "pruning-metrics-results-414266451290"
             )
 
-            PRUNING_ARTIFACT_URI = (
-                # paste the URI printed at the end of notebook 2 here:
-                "s3://pruning-metrics-results-414266451290/pruning_artifacts/<run_id>/"
-            )
+            def _discover_latest_pruning_artifact_uri(results_bucket, aws_profile):
+                session = boto3.session.Session(profile_name=aws_profile)
+                s3 = session.client("s3")
+                paginator = s3.get_paginator("list_objects_v2")
+                run_ids = set()
+                for page in paginator.paginate(Bucket=results_bucket, Prefix="pruning_artifacts/"):
+                    for entry in page.get("Contents", []) or []:
+                        key = entry["Key"]
+                        parts = key.split("/")
+                        if len(parts) >= 3 and parts[0] == "pruning_artifacts":
+                            run_ids.add(parts[1])
+                if not run_ids:
+                    return ""
+                latest = sorted(run_ids)[-1]
+                return f"s3://{results_bucket}/pruning_artifacts/{latest}/"
+
+            PRUNING_ARTIFACT_URI = os.environ.get("PRUNING_ARTIFACT_URI", "").strip()
+            if "<" in PRUNING_ARTIFACT_URI or ">" in PRUNING_ARTIFACT_URI:
+                PRUNING_ARTIFACT_URI = ""
+            if not PRUNING_ARTIFACT_URI:
+                PRUNING_ARTIFACT_URI = _discover_latest_pruning_artifact_uri(
+                    RESULTS_BUCKET, AWS_PROFILE
+                )
+            if not PRUNING_ARTIFACT_URI:
+                PRUNING_ARTIFACT_URI = "s3://pruning-metrics-results-414266451290/pruning_artifacts/<run_id>/"
             EVAL_DATASET_SPEC = ""
             EVAL_LEVELS = [0, 20, 40, 60, 80]
             TF_SEED = 65320
@@ -872,8 +939,8 @@ def build_notebook_04() -> None:
             }, indent=2))
             assert PRUNING_ARTIFACT_URI.startswith("s3://"), "Set PRUNING_ARTIFACT_URI."
             assert "<" not in PRUNING_ARTIFACT_URI and ">" not in PRUNING_ARTIFACT_URI, (
-                "PRUNING_ARTIFACT_URI must be the real URI from notebook 2, not a "
-                "placeholder (remove <run_id> and use the printed timestamp id)."
+                "Could not resolve PRUNING_ARTIFACT_URI. Run notebook 2 to completion "
+                "(or set PRUNING_ARTIFACT_URI in .env) and re-run this cell."
             )
             """
         ),
