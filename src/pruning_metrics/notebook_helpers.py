@@ -109,9 +109,7 @@ def find_capacity(
     env = dict(os.environ)
     if aws_profile is not None:
         env["AWS_PROFILE"] = aws_profile
-    completed = subprocess.run(
-        cmd, env=env, check=True, capture_output=True, text=True
-    )
+    completed = subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
     payload = json.loads(completed.stdout)
     return list(payload.get("candidates", []))
 
@@ -208,16 +206,12 @@ def launch_runner(
     if aws_profile is not None:
         env["AWS_PROFILE"] = aws_profile
 
-    completed = subprocess.run(
-        cmd, env=env, check=True, capture_output=True, text=True
-    )
+    completed = subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
     # The launcher prints two JSON blobs to stdout: the early plan and the
     # post-launch enriched plan. The last full JSON object is the canonical one.
     plan = _last_json_object(completed.stdout)
     if plan is None:
-        raise RuntimeError(
-            "Could not parse launcher JSON output:\n" + completed.stdout
-        )
+        raise RuntimeError("Could not parse launcher JSON output:\n" + completed.stdout)
 
     instance_id = plan.get("instance_id", "")
     return LaunchedRun(
@@ -366,23 +360,83 @@ def describe_instance(
     return reservations[0]["Instances"][0]
 
 
-def wait_for_instance_terminated(
+def wait_for_instance_terminated(  # pylint: disable=too-many-arguments
     instance_id: str,
     region: str,
     *,
     aws_profile: str | None = None,
     poll_seconds: float = 30.0,
     timeout_seconds: float = 60 * 60 * 8,
+    progress_log_interval_seconds: float | None = None,
 ) -> str:
-    """Block until the instance reaches a terminal state ('terminated' or 'stopped')."""
+    """Block until the instance reaches a terminal state ('terminated' or 'stopped').
+
+    The instance typically stays ``running`` for the entire GPU runner lifetime
+    (model load, eval loops, S3 sync). Notebooks that only call this function
+    therefore see no output for hours unless ``progress_log_interval_seconds``
+    is set.
+
+    Parameters
+    ----------
+    instance_id:
+        EC2 instance id returned by the launcher.
+    region:
+        Region where the instance was launched.
+    aws_profile:
+        Optional boto3 profile name.
+    poll_seconds:
+        Sleep between ``DescribeInstances`` polls.
+    timeout_seconds:
+        Raise ``TimeoutError`` if no terminal state before this wall time.
+    progress_log_interval_seconds:
+        When set to a positive number, print instance state and elapsed time
+        to stdout at least this often (plus once on the first poll). Use in
+        notebooks so long jobs do not look stuck.
+
+    Returns
+    -------
+    str
+        ``"terminated"`` or ``"stopped"``.
+
+    Raises
+    ------
+    TimeoutError
+        If the instance never reaches a terminal state within ``timeout_seconds``.
+    """
 
     started = time.monotonic()
+    log_progress = (
+        progress_log_interval_seconds is not None
+        and progress_log_interval_seconds > 0.0
+    )
+    progress_interval = float(progress_log_interval_seconds) if log_progress else 0.0
+    last_progress_log_mono = float("-inf")
+
+    if log_progress:
+        print(
+            f"Polling {instance_id!r} in {region!r} every {poll_seconds:.0f}s "
+            f"until terminated or stopped (timeout {timeout_seconds / 3600:.1f} h). "
+            "State stays 'running' until the runner exits and userdata shuts "
+            "the box down — large evals can take many hours.",
+            flush=True,
+        )
+
     while True:
         info = describe_instance(instance_id, region, aws_profile=aws_profile)
         state = (info.get("State") or {}).get("Name", "unknown")
+        now = time.monotonic()
+        elapsed = now - started
+
+        if log_progress and (now - last_progress_log_mono >= progress_interval):
+            print(
+                f"  EC2 state={state!r} elapsed_min={elapsed / 60.0:.1f}",
+                flush=True,
+            )
+            last_progress_log_mono = now
+
         if state in ("terminated", "stopped"):
             return state
-        if time.monotonic() - started > timeout_seconds:
+        if elapsed > timeout_seconds:
             raise TimeoutError(
                 f"Instance {instance_id} still in state {state!r} after timeout."
             )
