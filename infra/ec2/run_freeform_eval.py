@@ -10,12 +10,19 @@ task-adapter spec, this runner:
 3. Snapshots the original ``Linear`` weights to host RAM.
 4. For each requested pruning level: restore -> apply per-row WANDA
    (matching ``run_pruning_calibration.py``'s scoring) -> generate the test
-   split greedily -> run the adapter's ``verify`` -> persist
+   split greedily -> run the adapter's ``verify`` -> compute teacher-forced
+   perplexity on the ground-truth answer -> persist
    ``level=NN/eval_records.jsonl`` and update ``summary.json`` -> incremental
    S3 sync so a spot interruption never loses a completed level.
 
 The free-form generation seed (``--generation-seed``) controls
 ``torch.manual_seed`` so repeated runs are bit-exact deterministic.
+
+Perplexity is computed via a single teacher-forced forward pass on
+``(record.prompt, record.target_text)`` after greedy generation for each
+test record. This adds <25% overhead versus the generation pass alone and
+produces calibrated ``exp(-mean_logprob)`` scores that are meaningful to
+compare across pruning levels.
 """
 
 from __future__ import annotations
@@ -52,6 +59,9 @@ from infra.ec2._runner_common import (  # noqa: E402
     s3_download_file,
     s3_sync,
     snapshot_linear_weights,
+)
+from pruning_metrics.evals.coding.teacher_forcing import (  # noqa: E402
+    compute_teacher_forced_logprobs,
 )
 from pruning_metrics.evals.tasks.base import TaskRecord  # noqa: E402
 from pruning_metrics.evals.tasks.registry import (  # noqa: E402
@@ -268,6 +278,7 @@ def main() -> int:
                 test_records=test_records,
                 config=config,
                 records_path=records_path,
+                base_model_id=manifest["base_model_id"],
             )
             level_summaries.append(level_summary)
             _write_summary(config, level_summaries, manifest, mode="freeform_eval")
@@ -308,8 +319,43 @@ def _evaluate_level(
     test_records: list[TaskRecord],
     config: FreeformConfig,
     records_path: Path,
+    base_model_id: str,
 ) -> dict[str, Any]:
-    """Generate + verify every test record for one pruning level."""
+    """Generate + verify every test record for one pruning level.
+
+    For each record this function performs two passes:
+
+    1. **Greedy generation**: produces the model's free-form completion for
+       accuracy measurement (``pass@1`` for coding, exact-match for math/MCQ).
+    2. **Teacher-forced forward pass**: computes per-token log-probabilities of
+       the ground-truth ``record.target_text`` given ``record.prompt``, yielding
+       calibrated perplexity without a second model snapshot.
+
+    Parameters
+    ----------
+    level:
+        Sparsity level in percent (e.g. 20.0 means 20% of weights zeroed).
+    model:
+        The pruned causal LM (weights already modified in-place by the caller).
+    tokenizer:
+        Matching HuggingFace tokenizer.
+    adapter:
+        Task adapter providing ``build_inference_prompt`` and ``verify``.
+    test_records:
+        Records drawn from the adapter's test split.
+    config:
+        Run-level configuration (seeds, token limits, etc.).
+    records_path:
+        Output JSONL path for per-task records.
+    base_model_id:
+        Base model identifier used to label the teacher-forced record.
+
+    Returns
+    -------
+    dict[str, Any]
+        Level-level summary including ``pass_at_1``, ``average_perplexity``,
+        and status breakdowns.
+    """
 
     import torch
 
@@ -317,6 +363,7 @@ def _evaluate_level(
     pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
     statuses: dict[str, int] = {}
+    perplexities: list[float] = []
     written = 0
     started = time.monotonic()
 
@@ -327,6 +374,7 @@ def _evaluate_level(
                 torch.cuda.manual_seed_all(config.generation_seed)
             random.seed(config.generation_seed)
 
+            # --- greedy generation pass ---
             inference_prompt = adapter.build_inference_prompt(record)
             encoded = tokenizer(inference_prompt, return_tensors="pt")
             encoded = {k: v.to(target_device) for k, v in encoded.items()}
@@ -350,8 +398,38 @@ def _evaluate_level(
                 timeout_seconds=config.timeout_seconds,
             )
             statuses[outcome.status] = statuses.get(outcome.status, 0) + 1
-            written += 1
 
+            # --- teacher-forced perplexity pass on ground-truth answer ---
+            # Uses record.prompt (not the instruction-wrapped inference_prompt)
+            # to stay consistent with the standalone teacher-forced runner.
+            perplexity: float | None = None
+            average_logprob: float | None = None
+            num_target_tokens: int = 0
+            if record.target_text:
+                try:
+                    tf_record = compute_teacher_forced_logprobs(
+                        model=model,
+                        tokenizer=tokenizer,
+                        prompt=record.prompt,
+                        answer=record.target_text,
+                        model_id=f"{base_model_id}@prune={level_label(level)}",
+                        task_id=record.task_id,
+                        seed=config.generation_seed,
+                        top_k=1,
+                    )
+                    perplexity = tf_record.perplexity
+                    average_logprob = tf_record.average_logprob
+                    num_target_tokens = tf_record.num_answer_tokens
+                    perplexities.append(perplexity)
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    LOGGER.warning(
+                        "TF perplexity failed for %s at level %s%%: %s",
+                        record.task_id,
+                        level_label(level),
+                        exc,
+                    )
+
+            written += 1
             handle.write(
                 json.dumps(
                     {
@@ -364,6 +442,9 @@ def _evaluate_level(
                         "num_generated_tokens": int(new_tokens.shape[0]),
                         "verification_status": outcome.status,
                         "verification_detail": outcome.detail,
+                        "perplexity": perplexity,
+                        "average_logprob": average_logprob,
+                        "num_target_tokens": num_target_tokens,
                     }
                 )
                 + "\n"
@@ -380,10 +461,14 @@ def _evaluate_level(
     elapsed = time.monotonic() - started
     num_passed = statuses.get("pass", 0)
     pass_at_1 = num_passed / written if written else 0.0
+    avg_perplexity = (
+        float(sum(perplexities) / len(perplexities)) if perplexities else None
+    )
     LOGGER.info(
-        "Level %s%%: pass@1=%.4f over %d in %.1fs",
+        "Level %s%%: pass@1=%.4f avg_perplexity=%s over %d in %.1fs",
         level_label(level),
         pass_at_1,
+        f"{avg_perplexity:.4f}" if avg_perplexity is not None else "N/A",
         written,
         elapsed,
     )
@@ -392,6 +477,7 @@ def _evaluate_level(
         "num_test_tasks": written,
         "num_passed": num_passed,
         "pass_at_1": pass_at_1,
+        "average_perplexity": avg_perplexity,
         "status_breakdown": statuses,
         "elapsed_seconds": elapsed,
         "eval_records_path": str(records_path),

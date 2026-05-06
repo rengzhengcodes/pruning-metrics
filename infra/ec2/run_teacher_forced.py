@@ -69,7 +69,9 @@ class TeacherForcedConfig:
     tf_seed:
         Seed used to pick the sampled records from the test split.
     num_tf_samples:
-        Number of distinct records scored (>= 1).
+        Number of distinct records scored. Use 0 to score all test records
+        (sorted deterministically by task_id). Use >= 1 for a seeded random
+        sample.
     explicit_sample_task_ids:
         Optional task-id list overriding the seeded sample selection. Must
         be a subset of the test split.
@@ -128,6 +130,11 @@ def parse_args() -> argparse.Namespace:
         "--num-tf-samples",
         type=int,
         default=int(env_or("NUM_TF_SAMPLES", default="1")),
+        help=(
+            "Number of test records to score with teacher forcing. "
+            "0 = all test records (sorted by task_id for determinism); "
+            ">= 1 = seeded random sample."
+        ),
     )
     parser.add_argument(
         "--explicit-sample-task-ids",
@@ -168,8 +175,8 @@ def main() -> int:
     args = parse_args()
     if not args.artifact_uri:
         raise SystemExit("--artifact-uri is required")
-    if args.num_tf_samples <= 0:
-        raise SystemExit("--num-tf-samples must be positive")
+    if args.num_tf_samples < 0:
+        raise SystemExit("--num-tf-samples must be >= 0 (0 = all test records)")
 
     artifact_dir = Path(args.output_dir) / "_artifact"
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -325,7 +332,29 @@ def _select_tf_samples(
     test_records: list[TaskRecord],
     config: TeacherForcedConfig,
 ) -> list[TaskRecord]:
-    """Pick ``num_tf_samples`` records, with explicit overrides if given."""
+    """Pick records for teacher-forced scoring.
+
+    Selection priority:
+
+    1. ``explicit_sample_task_ids`` — caller-specified task ids (must be a
+       subset of the test split).
+    2. ``num_tf_samples == 0`` — return all test records sorted by task_id
+       for determinism.
+    3. ``num_tf_samples >= 1`` — seeded random sample of that size.
+
+    Parameters
+    ----------
+    test_records:
+        Full test split produced by the adapter's ``train_test_split``.
+    config:
+        Run config carrying ``num_tf_samples``, ``tf_seed``, and optional
+        ``explicit_sample_task_ids``.
+
+    Returns
+    -------
+    list[TaskRecord]
+        Selected records in a deterministic order.
+    """
 
     if config.explicit_sample_task_ids:
         id_set = set(config.explicit_sample_task_ids)
@@ -337,6 +366,10 @@ def _select_tf_samples(
                 + ", ".join(sorted(missing))
             )
         return selected
+
+    # 0 means "score every test record" — sorted for determinism.
+    if config.num_tf_samples == 0:
+        return sorted(test_records, key=lambda r: r.task_id)
 
     sorted_records = sorted(test_records, key=lambda r: r.task_id)
     rng = random.Random(config.tf_seed)
