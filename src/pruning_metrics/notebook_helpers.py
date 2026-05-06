@@ -254,11 +254,13 @@ def wait_for_artifact(
     while True:
         try:
             return s3.head_object(Bucket=bucket, Key=key)
-        except s3.exceptions.ClientError:  # type: ignore[attr-defined]
-            pass
+        except s3.exceptions.ClientError as exc:  # type: ignore[attr-defined]
+            # Only swallow 404/NoSuchKey; re-raise AccessDenied and other errors
+            # so they surface immediately rather than looping until timeout.
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in ("404", "NoSuchKey"):
+                raise RuntimeError(f"head_object failed ({code}): {exc}") from exc
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            # 404 manifests as ClientError above; anything else (network,
-            # auth) bubbles up as a generic exception that we re-raise.
             raise RuntimeError(f"head_object failed: {exc}") from exc
         elapsed = time.monotonic() - started
         if elapsed > timeout_seconds:

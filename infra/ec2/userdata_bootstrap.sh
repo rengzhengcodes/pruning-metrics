@@ -158,6 +158,11 @@ if [ -n "$HF_TOKEN" ]; then
     "$PYTHON_BIN" -c "from huggingface_hub import login; login('$HF_TOKEN', add_to_git_credential=False)" || true
 fi
 
+# Disable the hf_xet Xet-CDN protocol. Unauthenticated Xet transfers are
+# severely throttled (dataset parquet files take hours instead of seconds).
+# Plain HTTPS is fast for both authenticated and unauthenticated users.
+export HF_HUB_DISABLE_XET=1
+
 # ${PYTHONPATH:-} guards against the variable being unset.
 export PYTHONPATH="$WORK_DIR/src:$WORK_DIR:${PYTHONPATH:-}"
 

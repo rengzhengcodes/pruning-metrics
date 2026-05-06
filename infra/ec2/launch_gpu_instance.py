@@ -46,6 +46,7 @@ USERDATA_TEMPLATE = Path(__file__).with_name("userdata_bootstrap.sh")
 TAR_EXCLUDES = {
     ".git",
     ".venv",
+    ".venv312",
     ".pytest_cache",
     "__pycache__",
     ".mypy_cache",
