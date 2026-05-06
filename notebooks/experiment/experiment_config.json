@@ -3,5 +3,83 @@
     "gsm8k": "s3://pruning-metrics-results-414266451290/pruning_artifacts/20260506T144103Z-b08812/",
     "humaneval": "s3://pruning-metrics-results-414266451290/pruning_artifacts/20260506T144135Z-991a93/",
     "arc_challenge": "s3://pruning-metrics-results-414266451290/pruning_artifacts/20260506T144208Z-122c3c/"
-  }
+  },
+  "freeform_eval_uris": {
+    "gsm8k_gsm8k": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215047Z-88f112/",
+    "gsm8k_humaneval": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215120Z-fbbf61/",
+    "gsm8k_arc_challenge": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215211Z-46ab80/",
+    "humaneval_gsm8k": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215254Z-91bb58/",
+    "humaneval_humaneval": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215349Z-655113/",
+    "humaneval_arc_challenge": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215407Z-c39843/",
+    "arc_challenge_gsm8k": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215501Z-045f1b/",
+    "arc_challenge_humaneval": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215524Z-fdf4c2/",
+    "arc_challenge_arc_challenge": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215546Z-7487ff/"
+  },
+  "teacher_forced_uris": {},
+  "freeform_launches": [
+    {
+      "cal": "gsm8k",
+      "eval": "gsm8k",
+      "run_id": "20260506T215047Z-88f112",
+      "instance_id": "i-03852fb49fd7f7050",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215047Z-88f112/"
+    },
+    {
+      "cal": "gsm8k",
+      "eval": "humaneval",
+      "run_id": "20260506T215120Z-fbbf61",
+      "instance_id": "i-075842cf93236b548",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215120Z-fbbf61/"
+    },
+    {
+      "cal": "gsm8k",
+      "eval": "arc_challenge",
+      "run_id": "20260506T215211Z-46ab80",
+      "instance_id": "i-0bed64c5c71d5b4d0",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215211Z-46ab80/"
+    },
+    {
+      "cal": "humaneval",
+      "eval": "gsm8k",
+      "run_id": "20260506T215254Z-91bb58",
+      "instance_id": "i-020b2694af8f1169f",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215254Z-91bb58/"
+    },
+    {
+      "cal": "humaneval",
+      "eval": "humaneval",
+      "run_id": "20260506T215349Z-655113",
+      "instance_id": "i-0a564a50e971d5e84",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215349Z-655113/"
+    },
+    {
+      "cal": "humaneval",
+      "eval": "arc_challenge",
+      "run_id": "20260506T215407Z-c39843",
+      "instance_id": "i-0433fa280eb2b09b3",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215407Z-c39843/"
+    },
+    {
+      "cal": "arc_challenge",
+      "eval": "gsm8k",
+      "run_id": "20260506T215501Z-045f1b",
+      "instance_id": "i-0936da31487581fc0",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215501Z-045f1b/"
+    },
+    {
+      "cal": "arc_challenge",
+      "eval": "humaneval",
+      "run_id": "20260506T215524Z-fdf4c2",
+      "instance_id": "i-0c7273b08849e364a",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215524Z-fdf4c2/"
+    },
+    {
+      "cal": "arc_challenge",
+      "eval": "arc_challenge",
+      "run_id": "20260506T215546Z-7487ff",
+      "instance_id": "i-051090a95bbfe7d18",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215546Z-7487ff/"
+    }
+  ],
+  "tf_launches": []
 }
