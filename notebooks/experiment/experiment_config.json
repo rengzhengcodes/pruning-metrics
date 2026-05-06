@@ -1,0 +1,7 @@
+{
+  "calibration_artifact_uris": {
+    "gsm8k": "s3://pruning-metrics-results-414266451290/pruning_artifacts/20260506T144103Z-b08812/",
+    "humaneval": "s3://pruning-metrics-results-414266451290/pruning_artifacts/20260506T144135Z-991a93/",
+    "arc_challenge": "s3://pruning-metrics-results-414266451290/pruning_artifacts/20260506T144208Z-122c3c/"
+  }
+}
