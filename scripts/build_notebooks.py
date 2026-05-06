@@ -673,36 +673,35 @@ def build_notebook_03() -> None:
         ),
         _md(
             """
-            ## Poll until the instance shuts down
+            ## Wait until the run is **finished** (not merely started)
 
-            This cell calls ``wait_for_instance_terminated``, which polls **EC2
-            instance state**, not S3. The box stays ``running`` for the whole
-            ``run_freeform_eval.py`` lifetime (load model, every test record ×
-            every pruning level, uploads). Only after the process exits does
-            userdata schedule shutdown, so multi-hour ``running`` is normal for
-            large models or full test sets.
+            Seeing `summary.json` in S3 does **not** mean the eval is done: the
+            runner rewrites that file after **each** pruning level, with
+            `ended_at_utc` left null until the final `finally` block. The
+            instance can stay `running` for a long time after the first upload.
 
-            The runner uploads `summary.json` after **each** completed pruning
-            level; the **next** cell waits on S3 for that file. If the job exits
-            before level 0 finishes (bad `PRUNING_ARTIFACT_URI`, OOM, etc.),
-            `summary.json` never appears and that cell will time out with a hint
-            to inspect `_logs/userdata.log` under this run prefix.
+            This cell calls ``wait_for_runner_completion``, which returns as soon
+            as `summary.json` contains a non-null `ended_at_utc`, or when the
+            EC2 instance terminates (fallback if the process dies without a
+            final write). The next cell still waits for the object to exist
+            before plotting (instant once the final summary landed).
             """
         ),
         _code(
             """
             from pruning_metrics.notebook_helpers import (
-                describe_instance,
                 list_results,
-                wait_for_instance_terminated,
+                wait_for_runner_completion,
             )
 
             print(
-                "Periodic EC2 status below (Ctrl-C stops this kernel loop only; "
-                "the instance keeps running until the runner finishes)."
+                "Waiting for final summary (ended_at_utc) or instance shutdown. "
+                "Ctrl-C stops this kernel loop only; the instance keeps running."
             )
             try:
-                wait_for_instance_terminated(
+                reason, _summary = wait_for_runner_completion(
+                    bucket=RESULTS_BUCKET,
+                    summary_key=f"freeform_eval/{launched.run_id}/summary.json",
                     instance_id=launched.instance_id,
                     region=launched.region,
                     aws_profile=AWS_PROFILE,
@@ -710,6 +709,7 @@ def build_notebook_03() -> None:
                     timeout_seconds=60 * 60 * 6,
                     progress_log_interval_seconds=300.0,
                 )
+                print("Completion signal:", reason)
             except KeyboardInterrupt:
                 print("Stopped polling. The EC2 box keeps running until it self-shuts.")
 
@@ -1007,12 +1007,11 @@ def build_notebook_04() -> None:
         ),
         _md(
             """
-            ## Wait for the instance to terminate
+            ## Wait until the run is **finished**
 
-            Like notebook 3, this polls **EC2 state** until the box self-shuts
-            after ``run_teacher_forced.py`` exits. The instance remains
-            ``running`` for the full GPU job; use the periodic log lines to
-            confirm polling is alive.
+            Same as notebook 3: ``wait_for_runner_completion`` waits for
+            `ended_at_utc` in `summary.json` (or instance termination as a
+            fallback). Incremental summaries exist before the full job completes.
 
             `summary.json` is written after the first pruning level completes. If
             the runner crashes before that (bad artifact URI, OOM, etc.), the
@@ -1023,12 +1022,16 @@ def build_notebook_04() -> None:
             """
             from pruning_metrics.notebook_helpers import (
                 list_results,
-                wait_for_instance_terminated,
+                wait_for_runner_completion,
             )
 
-            print("Polling EC2 state every 60s until the box self-shuts...")
+            print(
+                "Waiting for final summary (ended_at_utc) or instance shutdown..."
+            )
             try:
-                wait_for_instance_terminated(
+                reason, _summary = wait_for_runner_completion(
+                    bucket=RESULTS_BUCKET,
+                    summary_key=f"teacher_forced/{launched.run_id}/summary.json",
                     instance_id=launched.instance_id,
                     region=launched.region,
                     aws_profile=AWS_PROFILE,
@@ -1036,6 +1039,7 @@ def build_notebook_04() -> None:
                     timeout_seconds=60 * 60 * 4,
                     progress_log_interval_seconds=300.0,
                 )
+                print("Completion signal:", reason)
             except KeyboardInterrupt:
                 print("Stopped polling; instance keeps running.")
 
