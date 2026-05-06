@@ -109,7 +109,14 @@ def find_capacity(
     env = dict(os.environ)
     if aws_profile is not None:
         env["AWS_PROFILE"] = aws_profile
-    completed = subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
+    completed = subprocess.run(
+        cmd, env=env, check=False, stdout=subprocess.PIPE, stderr=None, text=True
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"find_capacity.py exited {completed.returncode}. "
+            f"See stderr output above."
+        )
     payload = json.loads(completed.stdout)
     return list(payload.get("candidates", []))
 
@@ -206,7 +213,16 @@ def launch_runner(
     if aws_profile is not None:
         env["AWS_PROFILE"] = aws_profile
 
-    completed = subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
+    # stderr is NOT captured — it flows directly to the notebook cell so
+    # progress lines and any error tracebacks are visible immediately.
+    completed = subprocess.run(
+        cmd, env=env, check=False, stdout=subprocess.PIPE, stderr=None, text=True
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"launch_gpu_instance.py exited {completed.returncode}. "
+            f"See stderr output above."
+        )
     # The launcher prints two JSON blobs to stdout: the early plan and the
     # post-launch enriched plan. The last full JSON object is the canonical one.
     plan = _last_json_object(completed.stdout)
