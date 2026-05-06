@@ -271,10 +271,22 @@ def render_runner_env_exports(env: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def resolve_bucket_region(s3_client: Any, bucket: str) -> str:
+    """Return the AWS region that hosts *bucket*.
+
+    ``get_bucket_location`` returns ``None`` for us-east-1 (the original
+    S3 region), so we normalise that to the canonical name.
+    """
+    response = s3_client.get_bucket_location(Bucket=bucket)
+    location = response.get("LocationConstraint")
+    return location or "us-east-1"
+
+
 def render_userdata(
     template_path: Path,
     *,
     results_bucket: str,
+    results_bucket_region: str,
     repo_tarball_key: str,
     results_prefix: str,
     run_id: str,
@@ -289,6 +301,7 @@ def render_userdata(
     text = template_path.read_text(encoding="utf-8")
     replacements = {
         "__RESULTS_BUCKET__": results_bucket,
+        "__RESULTS_BUCKET_REGION__": results_bucket_region,
         "__REPO_TARBALL_KEY__": repo_tarball_key,
         "__RESULTS_PREFIX__": results_prefix,
         "__RUN_ID__": run_id,
@@ -342,6 +355,12 @@ def main() -> int:
     )
     upload_tarball(s3, args.results_bucket, repo_tarball_key, tarball)
 
+    results_bucket_region = resolve_bucket_region(s3, args.results_bucket)
+    print(
+        f"Results bucket {args.results_bucket!r} is in {results_bucket_region}",
+        file=sys.stderr,
+    )
+
     ssm = boto3.client("ssm", region_name=args.region)
     ami_id = resolve_dlami(ssm)
     print(f"DLAMI ID in {args.region}: {ami_id}", file=sys.stderr)
@@ -349,6 +368,7 @@ def main() -> int:
     userdata = render_userdata(
         USERDATA_TEMPLATE,
         results_bucket=args.results_bucket,
+        results_bucket_region=results_bucket_region,
         repo_tarball_key=repo_tarball_key,
         results_prefix=results_prefix,
         run_id=run_id,
@@ -370,6 +390,7 @@ def main() -> int:
         "instance_type": args.instance_type,
         "max_spot_price": args.max_spot_price,
         "results_bucket": args.results_bucket,
+        "results_bucket_region": results_bucket_region,
         "results_prefix": results_prefix,
         "repo_tarball_key": repo_tarball_key,
         "ami_id": ami_id,
@@ -387,52 +408,69 @@ def main() -> int:
 
     ec2 = boto3.client("ec2", region_name=args.region)
     print("Calling RunInstances ...", file=sys.stderr)
-    response = ec2.run_instances(
-        ImageId=ami_id,
-        InstanceType=args.instance_type,
-        MinCount=1,
-        MaxCount=1,
-        Placement={"AvailabilityZone": args.availability_zone},
-        IamInstanceProfile={"Name": args.instance_profile},
-        BlockDeviceMappings=[
-            {
-                "DeviceName": "/dev/sda1",
-                "Ebs": {
-                    "VolumeSize": args.root_volume_gib,
-                    "VolumeType": "gp3",
-                    "Iops": 6000,
-                    "Throughput": 500,
-                    "DeleteOnTermination": True,
+    try:
+        response = ec2.run_instances(
+            ImageId=ami_id,
+            InstanceType=args.instance_type,
+            MinCount=1,
+            MaxCount=1,
+            Placement={"AvailabilityZone": args.availability_zone},
+            IamInstanceProfile={"Name": args.instance_profile},
+            BlockDeviceMappings=[
+                {
+                    "DeviceName": "/dev/sda1",
+                    "Ebs": {
+                        "VolumeSize": args.root_volume_gib,
+                        "VolumeType": "gp3",
+                        "Iops": 6000,
+                        "Throughput": 500,
+                        "DeleteOnTermination": True,
+                    },
+                }
+            ],
+            InstanceMarketOptions={
+                "MarketType": "spot",
+                "SpotOptions": {
+                    "MaxPrice": f"{args.max_spot_price:.4f}",
+                    "SpotInstanceType": "one-time",
+                    "InstanceInterruptionBehavior": "terminate",
                 },
-            }
-        ],
-        InstanceMarketOptions={
-            "MarketType": "spot",
-            "SpotOptions": {
-                "MaxPrice": f"{args.max_spot_price:.4f}",
-                "SpotInstanceType": "one-time",
-                "InstanceInterruptionBehavior": "terminate",
             },
-        },
-        InstanceInitiatedShutdownBehavior="terminate",
-        UserData=encoded_userdata,
-        TagSpecifications=[
-            {
-                "ResourceType": "instance",
-                "Tags": [
-                    {"Key": "Name", "Value": args.name_tag},
-                    {"Key": "RunId", "Value": run_id},
-                    {"Key": "Project", "Value": "pruning-metrics"},
-                    {"Key": "Runner", "Value": args.runner},
-                ],
-            }
-        ],
-        MetadataOptions={
-            "HttpTokens": "required",
-            "HttpEndpoint": "enabled",
-            "HttpPutResponseHopLimit": 2,
-        },
-    )
+            InstanceInitiatedShutdownBehavior="terminate",
+            UserData=encoded_userdata,
+            TagSpecifications=[
+                {
+                    "ResourceType": "instance",
+                    "Tags": [
+                        {"Key": "Name", "Value": args.name_tag},
+                        {"Key": "RunId", "Value": run_id},
+                        {"Key": "Project", "Value": "pruning-metrics"},
+                        {"Key": "Runner", "Value": args.runner},
+                    ],
+                }
+            ],
+            MetadataOptions={
+                "HttpTokens": "required",
+                "HttpEndpoint": "enabled",
+                "HttpPutResponseHopLimit": 2,
+            },
+        )
+    except ClientError as exc:
+        ec2_code = exc.response["Error"]["Code"]
+        if ec2_code in ("InsufficientInstanceCapacity", "UnfulfillableCapacity"):
+            print(
+                f"No spot capacity: {ec2_code} for {args.instance_type} "
+                f"in {args.availability_zone}",
+                file=sys.stderr,
+            )
+            return 2  # sentinel: try a different AZ/candidate
+        if ec2_code == "MaxSpotInstanceCountExceeded":
+            print(
+                f"Spot vCPU quota exhausted in {args.region}: {ec2_code}",
+                file=sys.stderr,
+            )
+            return 3  # sentinel: skip remaining candidates in this region
+        raise
 
     instance_id = response["Instances"][0]["InstanceId"]
     plan["instance_id"] = instance_id

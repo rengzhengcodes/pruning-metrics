@@ -43,6 +43,11 @@ echo "InstanceId=${INSTANCE_ID} Region=${INSTANCE_REGION}"
 
 # Substituted by the launcher (single quotes prevent shell expansion of literals).
 RESULTS_BUCKET='__RESULTS_BUCKET__'
+# Region where the S3 bucket lives -- may differ from this instance's region.
+# Using the bucket's region avoids PermanentRedirect (301) errors that occur
+# when an instance in us-east-2 sends S3 requests to the us-east-1 bucket
+# while specifying --region us-east-2.
+RESULTS_BUCKET_REGION='__RESULTS_BUCKET_REGION__'
 REPO_TARBALL_KEY='__REPO_TARBALL_KEY__'
 RESULTS_PREFIX='__RESULTS_PREFIX__'
 RUN_ID='__RUN_ID__'
@@ -61,11 +66,11 @@ cleanup() {
     if [ -n "$RESULTS_BUCKET" ]; then
         aws s3 cp "$LOG_DIR/userdata.log" \
             "s3://${RESULTS_BUCKET}/${RESULTS_PREFIX}/${RUN_ID}/_logs/userdata.log" \
-            --region "$INSTANCE_REGION" || true
+            --region "$RESULTS_BUCKET_REGION" || true
         if [ -d "$RESULTS_DIR" ]; then
             aws s3 sync "$RESULTS_DIR" \
                 "s3://${RESULTS_BUCKET}/${RESULTS_PREFIX}/${RUN_ID}/" \
-                --region "$INSTANCE_REGION" || true
+                --region "$RESULTS_BUCKET_REGION" || true
         fi
     fi
     if [ "${SHUTDOWN_ON_EXIT:-yes}" = "yes" ]; then
@@ -88,7 +93,7 @@ trap cleanup EXIT
             if [ -n "$RESULTS_BUCKET" ] && [ -d "$RESULTS_DIR" ]; then
                 aws s3 sync "$RESULTS_DIR" \
                     "s3://${RESULTS_BUCKET}/${RESULTS_PREFIX}/${RUN_ID}/" \
-                    --region "$INSTANCE_REGION" || true
+                    --region "$RESULTS_BUCKET_REGION" || true
             fi
             break
         fi
@@ -144,7 +149,7 @@ cd "$WORK_DIR"
 echo "Pulling repo tarball s3://${RESULTS_BUCKET}/${REPO_TARBALL_KEY}"
 for attempt in 1 2 3; do
     if aws s3 cp "s3://${RESULTS_BUCKET}/${REPO_TARBALL_KEY}" /tmp/repo.tar.gz \
-        --region "$INSTANCE_REGION"; then
+        --region "$RESULTS_BUCKET_REGION"; then
         break
     fi
     echo "S3 cp failed (attempt $attempt); sleeping before retry"
@@ -162,6 +167,11 @@ fi
 # severely throttled (dataset parquet files take hours instead of seconds).
 # Plain HTTPS is fast for both authenticated and unauthenticated users.
 export HF_HUB_DISABLE_XET=1
+
+# Point all boto3 / aws-cli calls at the bucket's region so cross-region
+# instances (e.g. us-east-2 instance, us-east-1 bucket) don't get
+# PermanentRedirect (301) errors.
+export AWS_DEFAULT_REGION="$RESULTS_BUCKET_REGION"
 
 # ${PYTHONPATH:-} guards against the variable being unset.
 export PYTHONPATH="$WORK_DIR/src:$WORK_DIR:${PYTHONPATH:-}"

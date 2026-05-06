@@ -31,6 +31,18 @@ from typing import Any, Iterable, Mapping
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+class InsufficientCapacityError(RuntimeError):
+    """Raised when EC2 returns InsufficientInstanceCapacity / UnfulfillableCapacity."""
+
+
+class QuotaExhaustedError(RuntimeError):
+    """Raised when EC2 returns MaxSpotInstanceCountExceeded for a region."""
+
+    def __init__(self, message: str, region: str) -> None:
+        super().__init__(message)
+        self.region = region
+
+
 @dataclass
 class LaunchedRun:
     """Result of a successful ``RunInstances`` call.
@@ -218,6 +230,14 @@ def launch_runner(
     completed = subprocess.run(
         cmd, env=env, check=False, stdout=subprocess.PIPE, stderr=None, text=True
     )
+    if completed.returncode == 2:
+        raise InsufficientCapacityError(
+            f"No spot capacity for {instance_type} in {availability_zone}."
+        )
+    if completed.returncode == 3:
+        raise QuotaExhaustedError(
+            f"Spot vCPU quota exhausted in {region}.", region=region
+        )
     if completed.returncode != 0:
         raise RuntimeError(
             f"launch_gpu_instance.py exited {completed.returncode}. "
@@ -241,6 +261,126 @@ def launch_runner(
             f"s3://{results_bucket}/{results_prefix.strip('/')}/{plan['run_id']}/"
         ),
         raw_plan=plan,
+    )
+
+
+def launch_runner_with_fallback(
+    candidates: list[dict[str, Any]],
+    *,
+    runner: str,
+    runner_env: Mapping[str, Any],
+    results_bucket: str,
+    results_prefix: str,
+    run_id: str | None = None,
+    aws_profile: str | None = None,
+    instance_profile: str = "pruning-metrics-ec2",
+    hf_token: str = "",
+    dry_run: bool = False,
+    no_shutdown_on_exit: bool = False,
+    name_tag: str = "pruning-metrics-runner",
+    recheck_regions: list[str] | None = None,
+    recheck_instance_types: list[str] | None = None,
+) -> LaunchedRun:
+    """Try each capacity candidate in order, retrying on InsufficientInstanceCapacity.
+
+    When the initial ``candidates`` list is exhausted, re-probes spot capacity
+    using ``recheck_regions`` / ``recheck_instance_types`` (or the union of
+    whatever was in ``candidates``) and tries any newly-visible AZs.
+
+    Parameters
+    ----------
+    candidates:
+        Ordered list returned by :func:`find_capacity`. Tried front-to-back;
+        the first successful ``RunInstances`` wins.
+    recheck_regions:
+        Regions to search if the initial candidates are all full.  Defaults to
+        the union of regions already in ``candidates``.
+    recheck_instance_types:
+        Instance types to search on recheck.  Defaults to the union already in
+        ``candidates``.
+    All other parameters:
+        Forwarded verbatim to :func:`launch_runner`.
+
+    Raises
+    ------
+    InsufficientCapacityError
+        When no candidate (including recheck) has available capacity.
+    """
+
+    if not candidates:
+        raise ValueError("candidates list is empty.")
+
+    attempted: set[str] = set()
+    quota_exhausted_regions: set[str] = set()
+
+    def _try_list(clist: list[dict[str, Any]]) -> LaunchedRun | None:
+        for candidate in clist:
+            az = candidate["availability_zone"]
+            itype = candidate["instance_type"]
+            region = candidate["region"]
+            key = f"{region}/{az}/{itype}"
+            if key in attempted:
+                continue
+            if region in quota_exhausted_regions:
+                print(f"  Skipping {az} ({itype}): quota exhausted in {region}.", flush=True)
+                attempted.add(key)
+                continue
+            attempted.add(key)
+            try:
+                return launch_runner(
+                    runner=runner,
+                    runner_env=runner_env,
+                    region=region,
+                    availability_zone=az,
+                    instance_type=itype,
+                    max_spot_price=float(candidate["max_bid_usd_per_hour"]),
+                    results_bucket=results_bucket,
+                    results_prefix=results_prefix,
+                    run_id=run_id,
+                    aws_profile=aws_profile,
+                    instance_profile=instance_profile,
+                    hf_token=hf_token,
+                    dry_run=dry_run,
+                    no_shutdown_on_exit=no_shutdown_on_exit,
+                    name_tag=name_tag,
+                )
+            except QuotaExhaustedError as exc:
+                quota_exhausted_regions.add(exc.region)
+                print(
+                    f"  Spot quota exhausted in {exc.region}; "
+                    f"skipping all remaining {exc.region} candidates.",
+                    flush=True,
+                )
+            except InsufficientCapacityError:
+                print(f"  No capacity at {az} ({itype}); trying next...", flush=True)
+        return None
+
+    result = _try_list(candidates)
+    if result is not None:
+        return result
+
+    # All initial candidates exhausted — re-probe for fresh capacity data.
+    regions = recheck_regions or sorted({c["region"] for c in candidates})
+    instance_types = recheck_instance_types or list(
+        dict.fromkeys(c["instance_type"] for c in candidates)
+    )
+    print(
+        f"  All {len(candidates)} initial candidates exhausted. "
+        f"Re-probing capacity across {regions} ...",
+        flush=True,
+    )
+    fresh = find_capacity(
+        regions=regions,
+        instance_types=instance_types,
+        aws_profile=aws_profile,
+    )
+    result = _try_list(fresh)
+    if result is not None:
+        return result
+
+    raise InsufficientCapacityError(
+        f"No spot capacity found after trying {len(attempted)} candidates "
+        f"(initial + recheck) across {regions}: " + ", ".join(sorted(attempted))
     )
 
 
