@@ -263,16 +263,26 @@ def main() -> int:
                         level_label(level),
                     )
                     continue
-                tf_record = compute_teacher_forced_logprobs(
-                    model=model,
-                    tokenizer=tokenizer,
-                    prompt=record.prompt,
-                    answer=record.target_text,
-                    model_id=f"{manifest['base_model_id']}@prune={level}",
-                    task_id=record.task_id,
-                    seed=config.tf_seed,
-                    top_k=config.top_k,
-                )
+                try:
+                    tf_record = compute_teacher_forced_logprobs(
+                        model=model,
+                        tokenizer=tokenizer,
+                        prompt=record.prompt,
+                        answer=record.target_text,
+                        model_id=f"{manifest['base_model_id']}@prune={level}",
+                        task_id=record.task_id,
+                        seed=config.tf_seed,
+                        top_k=config.top_k,
+                    )
+                except ValueError as exc:
+                    LOGGER.warning(
+                        "Skipping sample %d task=%s at level=%s — tokenisation error: %s",
+                        sample_idx,
+                        record.task_id,
+                        level_label(level),
+                        exc,
+                    )
+                    continue
                 level_dir = (
                     config.output_dir
                     / f"level={level_label(level)}"

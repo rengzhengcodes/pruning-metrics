@@ -18,13 +18,13 @@
   "teacher_forced_uris": {
     "gsm8k_gsm8k": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224607Z-3dee0b/",
     "gsm8k_humaneval": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224640Z-95ff5b/",
-    "gsm8k_arc_challenge": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224713Z-68ed5e/",
+    "gsm8k_arc_challenge": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T235318Z-049f50/",
     "humaneval_gsm8k": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224730Z-7b5dc5/",
     "humaneval_humaneval": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224803Z-d3beaa/",
-    "humaneval_arc_challenge": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224836Z-5f3505/",
+    "humaneval_arc_challenge": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T235351Z-036a42/",
     "arc_challenge_gsm8k": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224910Z-055d0e/",
     "arc_challenge_humaneval": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224947Z-329c51/",
-    "arc_challenge_arc_challenge": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T225009Z-1b9e5b/"
+    "arc_challenge_arc_challenge": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T235425Z-9620ae/"
   },
   "freeform_launches": [
     {
@@ -109,9 +109,9 @@
     {
       "cal": "gsm8k",
       "eval": "arc_challenge",
-      "run_id": "20260506T224713Z-68ed5e",
-      "instance_id": "i-0da6caa602f0fc3cd",
-      "uri": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224713Z-68ed5e/"
+      "run_id": "20260506T235318Z-049f50",
+      "instance_id": "i-05040d3f6676f9c89",
+      "uri": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T235318Z-049f50/"
     },
     {
       "cal": "humaneval",
@@ -130,9 +130,9 @@
     {
       "cal": "humaneval",
       "eval": "arc_challenge",
-      "run_id": "20260506T224836Z-5f3505",
-      "instance_id": "i-09114edbd01a39244",
-      "uri": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T224836Z-5f3505/"
+      "run_id": "20260506T235351Z-036a42",
+      "instance_id": "i-014b518db51595ed0",
+      "uri": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T235351Z-036a42/"
     },
     {
       "cal": "arc_challenge",
@@ -151,9 +151,9 @@
     {
       "cal": "arc_challenge",
       "eval": "arc_challenge",
-      "run_id": "20260506T225009Z-1b9e5b",
-      "instance_id": "i-0758655e4bac76883",
-      "uri": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T225009Z-1b9e5b/"
+      "run_id": "20260506T235425Z-9620ae",
+      "instance_id": "i-01f6f88604f347472",
+      "uri": "s3://pruning-metrics-results-414266451290/teacher_forced/20260506T235425Z-9620ae/"
     }
   ]
 }
