@@ -227,3 +227,6 @@ __marimo__/
 
 # Result binaries.
 results/
+
+# Claude files.
+CLAUDE.md

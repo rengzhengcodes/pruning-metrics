@@ -8,10 +8,10 @@
     "gsm8k_gsm8k": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215047Z-88f112/",
     "gsm8k_humaneval": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215120Z-fbbf61/",
     "gsm8k_arc_challenge": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215211Z-46ab80/",
-    "humaneval_gsm8k": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215254Z-91bb58/",
+    "humaneval_gsm8k": "s3://pruning-metrics-results-414266451290/freeform_eval/20260507T044407Z-6b41fe/",
     "humaneval_humaneval": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215349Z-655113/",
     "humaneval_arc_challenge": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215407Z-c39843/",
-    "arc_challenge_gsm8k": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215501Z-045f1b/",
+    "arc_challenge_gsm8k": "s3://pruning-metrics-results-414266451290/freeform_eval/20260507T044546Z-14c6d5/",
     "arc_challenge_humaneval": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215524Z-fdf4c2/",
     "arc_challenge_arc_challenge": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215546Z-7487ff/"
   },
@@ -51,9 +51,9 @@
     {
       "cal": "humaneval",
       "eval": "gsm8k",
-      "run_id": "20260506T215254Z-91bb58",
-      "instance_id": "i-020b2694af8f1169f",
-      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215254Z-91bb58/"
+      "run_id": "20260507T044407Z-6b41fe",
+      "instance_id": "i-0fdb9444c6bf0185d",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260507T044407Z-6b41fe/"
     },
     {
       "cal": "humaneval",
@@ -72,9 +72,9 @@
     {
       "cal": "arc_challenge",
       "eval": "gsm8k",
-      "run_id": "20260506T215501Z-045f1b",
-      "instance_id": "i-0936da31487581fc0",
-      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260506T215501Z-045f1b/"
+      "run_id": "20260507T044546Z-14c6d5",
+      "instance_id": "i-0f1ee3b0bf5af0d22",
+      "uri": "s3://pruning-metrics-results-414266451290/freeform_eval/20260507T044546Z-14c6d5/"
     },
     {
       "cal": "arc_challenge",
