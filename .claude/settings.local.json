@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk '{print $2}')",
+      "Bash(xargs '-I{}' sh -c ' *)",
+      "Bash(python3 *)",
+      "Bash(aws ec2 *)",
+      "Bash(sudo hwclock *)",
+      "Bash(aws s3 *)",
+      "Read(//tmp/**)",
+      "Bash(/workspace/pruning-metrics/.venv/bin/python *)",
+      "Bash(/workspace/pruning-metrics/.venv/bin/python3 *)",
+      "Bash(/usr/bin/python -c \"import sklearn; print\\('sklearn:', sklearn.__version__\\)\")",
+      "Bash(/usr/bin/python -c \"import numpy; print\\('numpy:', numpy.__version__\\)\")",
+      "Bash(xargs -I{} basename {})"
+    ]
+  }
+}
