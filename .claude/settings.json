@@ -4,7 +4,8 @@
       "Bash(aws s3 ls *)",
       "Bash(aws ec2 describe-instances *)",
       "Bash(aws ec2 get-console-output *)",
-      "Bash(aws sts get-caller-identity *)"
+      "Bash(aws sts get-caller-identity *)",
+      "Bash(export AWS_PROFILE=*)"
     ]
   }
 }

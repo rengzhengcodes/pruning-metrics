@@ -12,7 +12,25 @@
       "Bash(/workspace/pruning-metrics/.venv/bin/python3 *)",
       "Bash(/usr/bin/python -c \"import sklearn; print\\('sklearn:', sklearn.__version__\\)\")",
       "Bash(/usr/bin/python -c \"import numpy; print\\('numpy:', numpy.__version__\\)\")",
-      "Bash(xargs -I{} basename {})"
+      "Bash(xargs -I{} basename {})",
+      "Bash(/workspace/pruning-metrics/.venv/bin/python3.14 --version)",
+      "Bash(python3.12 -c \"import sklearn; print\\('sklearn OK'\\)\")",
+      "Bash(python3.12 -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(/workspace/SmolBench/.venv/bin/python3.14 -c \"import sklearn; import matplotlib; print\\('OK'\\)\")",
+      "Bash(xargs -I{} sh -c '{} -c \"import sklearn\" 2>/dev/null && echo \"Found: {}\"')",
+      "Bash(PYTHONPATH=/workspace/pruning-metrics/.venv/lib/python3.14/site-packages python3.12 -c \"import matplotlib; print\\(matplotlib.__version__\\)\")",
+      "Bash(uv --version)",
+      "Bash(dpkg -l python3.14)",
+      "Bash(rpm -q python3.14)",
+      "Bash(dnf list *)",
+      "Bash(dpkg -l)",
+      "Bash(apt-cache policy *)",
+      "Bash(add-apt-repository ppa:deadsnakes/ppa -y)",
+      "Bash(apt-get install *)",
+      "Bash(python3.12 -m pip install --user matplotlib scikit-learn)",
+      "Bash(python3.12 -m venv /tmp/verify_venv)",
+      "Bash(/tmp/verify_venv/bin/pip install *)",
+      "Bash(/tmp/verify_venv/bin/python *)"
     ]
   }
 }
