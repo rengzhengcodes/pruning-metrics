@@ -1,51 +1,60 @@
 # EC2 spot GPU pipeline -- operator runbook
 
-This directory holds the GPU-side machinery for the four-notebook pruning
-workflow. Each of notebooks
-[`02_prune_llm.ipynb`](../../notebooks/02_prune_llm.ipynb),
-[`03_freeform_eval.ipynb`](../../notebooks/03_freeform_eval.ipynb), and
-[`04_teacher_forced.ipynb`](../../notebooks/04_teacher_forced.ipynb)
+This directory holds the machinery for the four-notebook pruning workflow,
+split into two folders:
+
+* [`provisioning/`](provisioning/) -- operator-side tooling: one-time AWS
+  bootstrap, spot-capacity probing, instance launch, and the user-data
+  template rendered onto the box.
+* [`runners/`](runners/) -- the scripts that execute **on** the GPU
+  instance: shared helpers plus one worker per notebook.
+
+Each of notebooks
+[`02_prune_llm.ipynb`](../notebooks/02_prune_llm.ipynb),
+[`03_freeform_eval.ipynb`](../notebooks/03_freeform_eval.ipynb), and
+[`04_teacher_forced.ipynb`](../notebooks/04_teacher_forced.ipynb)
 launches one of the runner scripts here on a spot EC2 instance, polls
 S3 for results, and self-terminates the box when the job is done.
 
 If you have not yet read it, start with
-[`docs/getting_started.md`](../../docs/getting_started.md) and
-[`docs/architecture.md`](../../docs/architecture.md). The notebooks
+[`docs/getting_started.md`](../docs/getting_started.md) and
+[`docs/architecture.md`](../docs/architecture.md). The notebooks
 themselves are the primary interface; this runbook covers the operator-
 side concerns: capacity probing, monitoring, debugging, recovery.
 
-## Files in this directory
+## Files
 
 | File | What it does |
 |------|--------------|
-| [`find_capacity.py`](find_capacity.py) | Scans `describe_spot_price_history` + `describe_instance_type_offerings` across regions/AZs for `p5.48xlarge`, `p4de.24xlarge`, `p4d.24xlarge` (or any user-supplied list) and prints the cheapest currently-fulfillable candidates as JSON. The notebooks call this through `pruning_metrics.notebook_helpers.find_capacity`. |
-| [`launch_gpu_instance.py`](launch_gpu_instance.py) | Tars the repo (excluding `.env`, `.git`, `.venv`, caches), uploads to S3, resolves the latest Deep Learning AMI via SSM Parameter Store, renders [`userdata_bootstrap.sh`](userdata_bootstrap.sh) with the chosen runner + runner-env, and calls `RunInstances` with the `pruning-metrics-ec2` instance profile + spot market + 1500 GiB gp3 root. |
-| [`userdata_bootstrap.sh`](userdata_bootstrap.sh) | Cloud-init script. Probes DLAMI conda envs for a python with `torch` pre-installed (falls back to system pip if none), pulls the repo tarball from S3, exports runner-specific env vars, runs the chosen runner, and on exit (success, failure, or spot interruption) syncs results to S3 and shuts down. |
-| [`_runner_common.py`](_runner_common.py) | Shared helpers reused by all three runners: per-row WANDA pruning, snapshot/restore of `nn.Linear` weights to host RAM, S3 sync / download, model loading. The S3 helpers do not import `torch` so the launcher can use them without a GPU env. |
-| [`run_pruning_calibration.py`](run_pruning_calibration.py) | Notebook 2's worker. Loads model once -> WANDA stats over the train split of the chosen calibration dataset -> uploads `wanda_stats.pt` + `manifest.json` + `split.json` + `run_metadata.json`. Fast (~5-25 min). |
-| [`run_freeform_eval.py`](run_freeform_eval.py) | Notebook 3's worker. Downloads the calibration artifact, loads the base model, and per requested pruning level: restore -> apply per-row WANDA -> generate the test split greedily -> task-adapter `verify` -> incremental S3 sync of `level=NN/eval_records.jsonl` and a rolling `summary.json`. |
-| [`run_teacher_forced.py`](run_teacher_forced.py) | Notebook 4's worker. Same artifact + adapter + level sweep, but instead of free-form generation it runs `compute_teacher_forced_logprobs` for `NUM_TF_SAMPLES` records picked deterministically using `TF_SEED`. Outputs `level=NN/sample=KKK_task=.../per_token.json`. |
+| [`provisioning/bootstrap_ec2_resources.py`](provisioning/bootstrap_ec2_resources.py) | One-time, idempotent AWS setup: versioned + public-access-blocked S3 results bucket, EC2 IAM role with scoped S3 / SSM / CloudWatch permissions, and the matching instance profile. |
+| [`provisioning/find_capacity.py`](provisioning/find_capacity.py) | Scans `describe_spot_price_history` + `describe_instance_type_offerings` across regions/AZs for `p5.48xlarge`, `p4de.24xlarge`, `p4d.24xlarge` (or any user-supplied list) and prints the cheapest currently-fulfillable candidates as JSON. The notebooks call this through `pruning_metrics.notebook_helpers.find_capacity`. |
+| [`provisioning/launch_gpu_instance.py`](provisioning/launch_gpu_instance.py) | Tars the repo (excluding `.env`, `.git`, `.venv`, caches), uploads to S3, resolves the latest Deep Learning AMI via SSM Parameter Store, renders [`provisioning/userdata_bootstrap.sh`](provisioning/userdata_bootstrap.sh) with the chosen runner + runner-env, and calls `RunInstances` with the `pruning-metrics-ec2` instance profile + spot market + 1500 GiB gp3 root. |
+| [`provisioning/userdata_bootstrap.sh`](provisioning/userdata_bootstrap.sh) | Cloud-init script. Probes DLAMI conda envs for a python with `torch` pre-installed (falls back to system pip if none), pulls the repo tarball from S3, exports runner-specific env vars, runs the chosen runner, and on exit (success, failure, or spot interruption) syncs results to S3 and shuts down. |
+| [`runners/_runner_common.py`](runners/_runner_common.py) | Shared helpers reused by all three runners: per-row WANDA pruning, snapshot/restore of `nn.Linear` weights to host RAM, S3 sync / download, model loading. The S3 helpers do not import `torch` so the launcher can use them without a GPU env. |
+| [`runners/run_pruning_calibration.py`](runners/run_pruning_calibration.py) | Notebook 2's worker. Loads model once -> WANDA stats over the train split of the chosen calibration dataset -> uploads `wanda_stats.pt` + `manifest.json` + `split.json` + `run_metadata.json`. Fast (~5-25 min). |
+| [`runners/run_freeform_eval.py`](runners/run_freeform_eval.py) | Notebook 3's worker. Downloads the calibration artifact, loads the base model, and per requested pruning level: restore -> apply per-row WANDA -> generate the test split greedily -> task-adapter `verify` -> incremental S3 sync of `level=NN/eval_records.jsonl` and a rolling `summary.json`. |
+| [`runners/run_teacher_forced.py`](runners/run_teacher_forced.py) | Notebook 4's worker. Same artifact + adapter + level sweep, but instead of free-form generation it runs `compute_teacher_forced_logprobs` for `NUM_TF_SAMPLES` records picked deterministically using `TF_SEED`. Outputs `level=NN/sample=KKK_task=.../per_token.json`. |
 
 The launcher's user-data renders the chosen runner via:
 
 ```bash
-python infra/ec2/launch_gpu_instance.py \
+python infra/provisioning/launch_gpu_instance.py \
     --runner {pruning_calibration|freeform_eval|teacher_forced} \
     --runner-env-json '{"BASE_MODEL_ID": "...", "PRUNING_LEVELS": "0,20,40,60,80", ...}'
 ```
 
 The notebooks build the right `runner_env` dict and call `launch_runner`
-in [`pruning_metrics.notebook_helpers`](../../src/pruning_metrics/notebook_helpers.py),
+in [`pruning_metrics.notebook_helpers`](../src/pruning_metrics/notebook_helpers.py),
 so most users never call this CLI directly.
 
 ## One-time AWS bootstrap
 
 Notebook 1 (`01_setup_aws.ipynb`) calls
-[`infra/aws/setup/bootstrap_ec2_resources.py`](../aws/setup/bootstrap_ec2_resources.py).
+[`provisioning/bootstrap_ec2_resources.py`](provisioning/bootstrap_ec2_resources.py).
 For a fresh account / region you can also run it from the command line:
 
 ```bash
-AWS_PROFILE=rengz python3 infra/aws/setup/bootstrap_ec2_resources.py \
+AWS_PROFILE=rengz python3 infra/provisioning/bootstrap_ec2_resources.py \
     --bucket pruning-metrics-results-414266451290 \
     --region us-east-1 \
     --role-name pruning-metrics-ec2
@@ -62,10 +71,10 @@ shell out directly:
 
 ```bash
 # Find capacity:
-AWS_PROFILE=rengz python3 infra/ec2/find_capacity.py
+AWS_PROFILE=rengz python3 infra/provisioning/find_capacity.py
 
 # Launch the calibration runner with Qwen2-1.5B-Instruct on a g5.xlarge:
-AWS_PROFILE=rengz python3 infra/ec2/launch_gpu_instance.py \
+AWS_PROFILE=rengz python3 infra/provisioning/launch_gpu_instance.py \
     --region us-east-1 --availability-zone us-east-1b \
     --instance-type g5.xlarge --max-spot-price 1.50 \
     --results-bucket pruning-metrics-results-414266451290 \
@@ -80,7 +89,7 @@ AWS_PROFILE=rengz python3 infra/ec2/launch_gpu_instance.py \
 ```
 
 `--dry-run` skips `RunInstances` (still uploads tarball + writes
-`infra/ec2/_last_userdata.sh` for inspection).
+`infra/provisioning/_last_userdata.sh` for inspection).
 
 ## Monitoring a running job
 

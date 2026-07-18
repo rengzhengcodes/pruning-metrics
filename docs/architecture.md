@@ -74,7 +74,7 @@ We deliberately persist a **tiny** pruning artifact (~tens of MB):
 
 Downstream notebooks reload the base model and re-derive pruned weights
 deterministically per level by re-applying the per-row WANDA scoring
-defined in [`infra/ec2/_runner_common.py`](../infra/ec2/_runner_common.py).
+defined in [`infra/runners/_runner_common.py`](../infra/runners/_runner_common.py).
 Trade-offs:
 
 * +cheap S3 storage (no need to keep ~720 GiB of pruned 72 B checkpoints);
@@ -106,16 +106,16 @@ pruning-metrics/
 │           ├── verifier.py
 │           └── teacher_forcing.py
 ├── infra/
-│   ├── aws/setup/
-│   │   └── bootstrap_ec2_resources.py  # runs from notebook 1
-│   └── ec2/
+│   ├── provisioning/                 # operator-side: AWS setup + launch
+│   │   ├── bootstrap_ec2_resources.py  # runs from notebook 1
+│   │   ├── find_capacity.py          # spot-price probe
+│   │   ├── launch_gpu_instance.py    # tarball + AMI + RunInstances
+│   │   └── userdata_bootstrap.sh     # cloud-init template
+│   └── runners/                      # executed on the GPU instance
 │       ├── _runner_common.py         # WANDA + S3 helpers shared by 3 runners
 │       ├── run_pruning_calibration.py# notebook 2's worker
 │       ├── run_freeform_eval.py      # notebook 3's worker
-│       ├── run_teacher_forced.py     # notebook 4's worker
-│       ├── launch_gpu_instance.py    # tarball + AMI + RunInstances
-│       ├── userdata_bootstrap.sh     # cloud-init template
-│       └── find_capacity.py          # spot-price probe
+│       └── run_teacher_forced.py     # notebook 4's worker
 ├── scripts/
 │   └── build_notebooks.py            # regenerates the 4 notebooks
 ├── docs/                             # this folder
@@ -126,16 +126,16 @@ pruning-metrics/
 
 1. **Notebook 2 - calibration.** The operator picks `BASE_MODEL_ID`,
    `CALIBRATION_DATASET_SPEC`, `PRUNING_LEVELS`, and seeds. The notebook
-   shells to [`infra/ec2/find_capacity.py`](../infra/ec2/find_capacity.py)
+   shells to [`infra/provisioning/find_capacity.py`](../infra/provisioning/find_capacity.py)
    to pick a GPU spot AZ, then to
-   [`infra/ec2/launch_gpu_instance.py`](../infra/ec2/launch_gpu_instance.py)
+   [`infra/provisioning/launch_gpu_instance.py`](../infra/provisioning/launch_gpu_instance.py)
    to tar the repo, upload it to S3, resolve the latest Deep Learning AMI,
    and call `RunInstances` with the user-data template
-   [`infra/ec2/userdata_bootstrap.sh`](../infra/ec2/userdata_bootstrap.sh)
+   [`infra/provisioning/userdata_bootstrap.sh`](../infra/provisioning/userdata_bootstrap.sh)
    rendered for the **calibration** runner.
 2. **GPU runs.** The user-data probes the DLAMI's pre-installed PyTorch
    conda env, falls back to system pip if needed, runs
-   [`infra/ec2/run_pruning_calibration.py`](../infra/ec2/run_pruning_calibration.py),
+   [`infra/runners/run_pruning_calibration.py`](../infra/runners/run_pruning_calibration.py),
    which loads the base model once, collects WANDA activation stats over
    the calibration split, writes `wanda_stats.pt` + `manifest.json` +
    `split.json`, syncs to S3, and shuts down the instance.
@@ -143,7 +143,7 @@ pruning-metrics/
    operator chooses an `EVAL_DATASET_SPEC` (may differ from calibration --
    for example calibrate on HumanEval+, evaluate on GSM8K) and an
    `EVAL_LEVELS` subset. Notebook 3 launches a second GPU box that runs
-   [`infra/ec2/run_freeform_eval.py`](../infra/ec2/run_freeform_eval.py),
+   [`infra/runners/run_freeform_eval.py`](../infra/runners/run_freeform_eval.py),
    which downloads the artifact, loads the model, and per level: restore
    weights -> apply per-row WANDA from stats -> generate test split greedily
    -> task-adapter verify -> sync `level=NN/eval_records.jsonl` + a rolling

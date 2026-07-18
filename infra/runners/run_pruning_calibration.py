@@ -22,13 +22,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import platform
 import socket
 import sys
 import time
-import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,14 +36,19 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # pylint: disable=wrong-import-position
-from infra.ec2._runner_common import (  # noqa: E402
+from infra.runners._runner_common import (  # noqa: E402
     LOGGER,
+    add_common_runner_args,
     collect_wanda_activation_stats,
     configure_logging,
     env_or,
     load_base_model,
     parse_pruning_levels,
+    s3_destination,
     s3_sync,
+    serialise_config,
+    split_csv,
+    write_json,
 )
 from pruning_metrics.evals.tasks.registry import (  # noqa: E402
     build_adapter_from_spec,
@@ -102,11 +105,6 @@ class CalibrationConfig:
     s3_results_bucket: str
     s3_results_prefix: str
     run_id: str
-
-
-def _default_run_id() -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{stamp}-{uuid.uuid4().hex[:6]}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -170,28 +168,8 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(env_or("MAX_CALIBRATION_TOKENS", default="512")),
     )
-    parser.add_argument(
-        "--output-dir",
-        default=env_or("RESULTS_LOCAL_DIR", default="/opt/results"),
-    )
-    parser.add_argument(
-        "--results-bucket",
-        default=env_or("RESULTS_BUCKET", default=""),
-    )
-    parser.add_argument(
-        "--results-prefix",
-        default=env_or("RESULTS_PREFIX", default="pruning_artifacts"),
-    )
-    parser.add_argument("--run-id", default=env_or("RUN_ID", default=_default_run_id()))
+    add_common_runner_args(parser, default_results_prefix="pruning_artifacts")
     return parser.parse_args()
-
-
-def _split_csv(raw: str) -> tuple[str, ...] | None:
-    """Parse a comma-separated id list (empty / "None" -> ``None``)."""
-
-    if not raw or raw.strip().lower() in ("", "none"):
-        return None
-    return tuple(token.strip() for token in raw.split(",") if token.strip())
 
 
 def main() -> int:
@@ -207,8 +185,8 @@ def main() -> int:
         pruning_levels=pruning_levels,
         split_seed=args.split_seed,
         train_frac=args.train_frac,
-        explicit_train_ids=_split_csv(args.explicit_train_ids),
-        explicit_test_ids=_split_csv(args.explicit_test_ids),
+        explicit_train_ids=split_csv(args.explicit_train_ids),
+        explicit_test_ids=split_csv(args.explicit_test_ids),
         max_calibration_samples=(
             args.max_calibration_samples
             if args.max_calibration_samples > 0
@@ -222,7 +200,7 @@ def main() -> int:
     )
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    LOGGER.info("Calibration config: %s", json.dumps(_serialise_config(config)))
+    LOGGER.info("Calibration config: %s", json.dumps(serialise_config(config)))
     _write_run_metadata(config)
 
     LOGGER.info("Loading task adapter from spec %r", config.dataset_spec)
@@ -292,21 +270,6 @@ def main() -> int:
     return 0
 
 
-def _serialise_config(config: CalibrationConfig) -> dict[str, Any]:
-    """Best-effort JSON-serialisable copy of ``config`` for logs."""
-
-    payload = asdict(config)
-    payload["output_dir"] = str(config.output_dir)
-    payload["pruning_levels"] = list(config.pruning_levels)
-    payload["explicit_train_ids"] = (
-        list(config.explicit_train_ids) if config.explicit_train_ids else None
-    )
-    payload["explicit_test_ids"] = (
-        list(config.explicit_test_ids) if config.explicit_test_ids else None
-    )
-    return payload
-
-
 def _write_run_metadata(config: CalibrationConfig) -> None:
     payload = {
         "host": socket.gethostname(),
@@ -316,15 +279,11 @@ def _write_run_metadata(config: CalibrationConfig) -> None:
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "base_model_id": config.base_model_id,
         "dataset_spec": config.dataset_spec,
-        "destination": (
-            f"s3://{config.s3_results_bucket}/{config.s3_results_prefix}/"
-            if config.s3_results_bucket
-            else "(local only)"
+        "destination": s3_destination(
+            config.s3_results_bucket, config.s3_results_prefix
         ),
     }
-    (config.output_dir / "run_metadata.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
+    write_json(config.output_dir / "run_metadata.json", payload)
 
 
 def _write_split_json(
@@ -350,9 +309,7 @@ def _write_split_json(
         "train_task_ids": [r.task_id for r in train_records],
         "test_task_ids": [r.task_id for r in test_records],
     }
-    (config.output_dir / "split.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
+    write_json(config.output_dir / "split.json", payload)
     LOGGER.info("Split written to %s", config.output_dir / "split.json")
 
 
@@ -412,9 +369,7 @@ def _write_manifest(
             "run_metadata": "run_metadata.json",
         },
     }
-    (config.output_dir / "manifest.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
+    write_json(config.output_dir / "manifest.json", payload)
     LOGGER.info("Manifest written to %s", config.output_dir / "manifest.json")
 
 

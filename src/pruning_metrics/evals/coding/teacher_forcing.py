@@ -206,7 +206,7 @@ def compute_teacher_forced_logprobs(
 
     # Determine target device. ``device_map='auto'`` models expose hf_device_map;
     # otherwise fall back to the parameter device or CPU.
-    target_device = _resolve_input_device(model)
+    target_device = resolve_input_device(model)
 
     input_ids = full_ids.unsqueeze(0).to(target_device)
     with torch.no_grad():
@@ -330,7 +330,7 @@ def teacher_forced_records_to_summary(
     }
 
 
-def _resolve_input_device(model: Any) -> Any:
+def resolve_input_device(model: Any) -> Any:
     """Find a sensible device on which to place input ids for ``model``.
 
     Sharded ``device_map='auto'`` models expose ``hf_device_map`` as a dict

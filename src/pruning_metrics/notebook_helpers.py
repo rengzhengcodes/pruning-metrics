@@ -4,7 +4,7 @@ The four notebooks (``notebooks/01_setup_aws.ipynb`` through
 ``notebooks/04_teacher_forced.ipynb``) all share the same shape of work:
 
 1. find a viable spot capacity candidate for the requested instance types,
-2. shell out to ``infra/ec2/launch_gpu_instance.py`` with the right runner
+2. shell out to ``infra/provisioning/launch_gpu_instance.py`` with the right runner
    + runner-env JSON,
 3. poll EC2 + S3 until the run finishes,
 4. fetch the artifact directory back to the local notebook for display.
@@ -112,7 +112,7 @@ def find_capacity(
 
     cmd = [
         sys.executable,
-        str(REPO_ROOT / "infra" / "ec2" / "find_capacity.py"),
+        str(REPO_ROOT / "infra" / "provisioning" / "find_capacity.py"),
         "--regions",
         ",".join(regions),
         "--instance-types",
@@ -176,7 +176,7 @@ def launch_runner(
         Optional HF token for gated models.
     dry_run:
         Skip ``RunInstances`` (still uploads tarball + writes
-        ``infra/ec2/_last_userdata.sh``).
+        ``infra/provisioning/_last_userdata.sh``).
     no_shutdown_on_exit:
         Keep instance alive after the runner finishes (debug).
     name_tag:
@@ -190,7 +190,7 @@ def launch_runner(
 
     cmd = [
         sys.executable,
-        str(REPO_ROOT / "infra" / "ec2" / "launch_gpu_instance.py"),
+        str(REPO_ROOT / "infra" / "provisioning" / "launch_gpu_instance.py"),
         "--region",
         region,
         "--availability-zone",

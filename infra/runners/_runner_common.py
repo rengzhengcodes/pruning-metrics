@@ -2,20 +2,27 @@
 
 Used by:
 
-* :mod:`infra.ec2.run_pruning_calibration` (notebook 2),
-* :mod:`infra.ec2.run_freeform_eval` (notebook 3),
-* :mod:`infra.ec2.run_teacher_forced` (notebook 4).
+* :mod:`infra.runners.run_pruning_calibration` (notebook 2),
+* :mod:`infra.runners.run_freeform_eval` (notebook 3),
+* :mod:`infra.runners.run_teacher_forced` (notebook 4),
+* :mod:`infra.provisioning.launch_gpu_instance` (run-id generation).
 
 All helpers are torch-free at import time so the launcher / notebook helpers
-can ``import infra.ec2._runner_common`` for type hints and S3 utilities
+can ``import infra.runners._runner_common`` for type hints and S3 utilities
 without having ``torch`` installed locally.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import os
+import socket
 import sys
+import uuid
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +49,72 @@ def ensure_src_on_path() -> None:
         sys.path.insert(0, str(SRC_DIR))
 
 
+def default_run_id() -> str:
+    """UTC timestamp + random suffix, e.g. ``20260718T120000Z-a1b2c3``."""
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{uuid.uuid4().hex[:6]}"
+
+
+def split_csv(raw: str) -> tuple[str, ...] | None:
+    """Parse a comma-separated id list (empty / "None" -> ``None``)."""
+
+    if not raw or raw.strip().lower() in ("", "none"):
+        return None
+    return tuple(token.strip() for token in raw.split(",") if token.strip())
+
+
+# ---------------------------------------------------------------------------
+# Shared CLI arguments
+# ---------------------------------------------------------------------------
+
+
+def add_common_runner_args(
+    parser: argparse.ArgumentParser, *, default_results_prefix: str
+) -> None:
+    """Register the staging/S3 arguments every runner accepts.
+
+    Defaults are pulled from the environment so the same invocation works
+    when the user-data script exports ``RESULTS_BUCKET`` etc.
+    """
+
+    parser.add_argument(
+        "--output-dir",
+        default=env_or("RESULTS_LOCAL_DIR", default="/opt/results"),
+    )
+    parser.add_argument(
+        "--results-bucket",
+        default=env_or("RESULTS_BUCKET", default=""),
+    )
+    parser.add_argument(
+        "--results-prefix",
+        default=env_or("RESULTS_PREFIX", default=default_results_prefix),
+    )
+    parser.add_argument(
+        "--run-id", default=env_or("RUN_ID", default=default_run_id())
+    )
+
+
+def add_eval_artifact_args(parser: argparse.ArgumentParser) -> None:
+    """Register the arguments shared by the two artifact-consuming eval runners."""
+
+    parser.add_argument(
+        "--artifact-uri",
+        default=env_or("PRUNING_ARTIFACT_URI", default=""),
+        help="s3://<bucket>/pruning_artifacts/<run_id>/ produced by calibration.",
+    )
+    parser.add_argument(
+        "--eval-dataset-spec",
+        default=env_or("EVAL_DATASET_SPEC", "DATASET_SPEC", default=""),
+        help="Adapter spec for the eval dataset (defaults to artifact's).",
+    )
+    parser.add_argument(
+        "--eval-levels",
+        default=env_or("EVAL_LEVELS", default=""),
+        help="Comma-separated levels to evaluate (defaults to artifact's).",
+    )
+
+
 # ---------------------------------------------------------------------------
 # S3 helpers (boto3, no torch)
 # ---------------------------------------------------------------------------
@@ -59,10 +132,20 @@ def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
     return bucket, key
 
 
+# (bucket, key) -> (size, mtime_ns) at last successful upload. The eval
+# runners call s3_sync after every pruning level, and most of the tree
+# (the downloaded calibration artifact, earlier levels' records) never
+# changes between calls -- without this cache each level re-uploads the
+# multi-hundred-MB ``wanda_stats.pt`` while the GPU sits idle.
+_UPLOADED: dict[tuple[str, str], tuple[int, int]] = {}
+
+
 def s3_sync(local_dir: Path, bucket: str, key_prefix: str) -> None:
     """Mirror ``local_dir`` to ``s3://bucket/key_prefix``.
 
     Uses boto3 directly (no AWS CLI) so the runner works on minimal AMIs.
+    Files already uploaded by an earlier call in this process are skipped
+    unless their size or mtime has changed since.
     """
 
     if not bucket:
@@ -76,18 +159,29 @@ def s3_sync(local_dir: Path, bucket: str, key_prefix: str) -> None:
 
     client = boto3.client("s3")
     prefix = key_prefix.strip("/")
-    files = [path for path in local_dir.rglob("*") if path.is_file()]
+    uploaded = 0
+    skipped = 0
+    for path in local_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(local_dir).as_posix()
+        key = f"{prefix}/{relative}" if prefix else relative
+        stat = path.stat()
+        signature = (stat.st_size, stat.st_mtime_ns)
+        if _UPLOADED.get((bucket, key)) == signature:
+            skipped += 1
+            continue
+        client.upload_file(str(path), bucket, key)
+        _UPLOADED[(bucket, key)] = signature
+        uploaded += 1
     LOGGER.info(
-        "Syncing %d files from %s to s3://%s/%s/",
-        len(files),
+        "Synced %d files (%d unchanged skipped) from %s to s3://%s/%s/",
+        uploaded,
+        skipped,
         local_dir,
         bucket,
         prefix,
     )
-    for path in files:
-        relative = path.relative_to(local_dir).as_posix()
-        key = f"{prefix}/{relative}" if prefix else relative
-        client.upload_file(str(path), bucket, key)
 
 
 def s3_download_file(s3_uri: str, local_path: Path) -> None:
@@ -102,35 +196,110 @@ def s3_download_file(s3_uri: str, local_path: Path) -> None:
     boto3.client("s3").download_file(bucket, key, str(local_path))
 
 
+def download_calibration_artifact(
+    artifact_uri: str, output_dir: Path
+) -> tuple[dict[str, Any], Path]:
+    """Fetch ``manifest.json`` + ``wanda_stats.pt`` into ``output_dir/_artifact``.
+
+    Returns the parsed manifest and the local artifact directory.
+    """
+
+    artifact_dir = output_dir / "_artifact"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    base = artifact_uri.rstrip("/")
+    LOGGER.info("Downloading manifest %s", f"{base}/manifest.json")
+    s3_download_file(f"{base}/manifest.json", artifact_dir / "manifest.json")
+    s3_download_file(f"{base}/wanda_stats.pt", artifact_dir / "wanda_stats.pt")
+    manifest = json.loads(
+        (artifact_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    return manifest, artifact_dir
+
+
+# ---------------------------------------------------------------------------
+# Shared config / metadata plumbing
+# ---------------------------------------------------------------------------
+
+
+def resolve_eval_defaults(
+    manifest: dict[str, Any], args: argparse.Namespace
+) -> dict[str, Any]:
+    """Eval-runner config fields where the CLI wins and the manifest is the fallback.
+
+    Returns the keyword arguments shared by both eval runners' config
+    dataclasses (dataset spec, levels, and the calibration split parameters).
+    """
+
+    eval_levels_raw = args.eval_levels or ",".join(
+        str(level) for level in manifest["pruning_levels"]
+    )
+    return {
+        "eval_dataset_spec": args.eval_dataset_spec or manifest["dataset_spec"],
+        "eval_levels": parse_pruning_levels(eval_levels_raw),
+        "split_seed": int(manifest["split_seed"]),
+        "train_frac": float(manifest["train_frac"]),
+        "explicit_train_ids": tuple(manifest.get("explicit_train_ids") or ())
+        or None,
+        "explicit_test_ids": tuple(manifest.get("explicit_test_ids") or ())
+        or None,
+    }
+
+
+def serialise_config(config: Any) -> dict[str, Any]:
+    """Best-effort JSON-serialisable copy of a runner config dataclass for logs.
+
+    Paths become strings; tuples become lists (an empty tuple becomes
+    ``None``, mirroring how the optional id lists are parsed).
+    """
+
+    payload: dict[str, Any] = {}
+    for key, value in asdict(config).items():
+        if isinstance(value, Path):
+            payload[key] = str(value)
+        elif isinstance(value, tuple):
+            payload[key] = list(value) if value else None
+        else:
+            payload[key] = value
+    return payload
+
+
+def s3_destination(bucket: str, prefix: str) -> str:
+    """Human-readable destination string used in run metadata."""
+
+    return f"s3://{bucket}/{prefix}/" if bucket else "(local only)"
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write ``payload`` as indented JSON (non-serialisable values via ``str``)."""
+
+    path.write_text(
+        json.dumps(payload, indent=2, default=str), encoding="utf-8"
+    )
+
+
+def eval_run_metadata(
+    config: Any, manifest: dict[str, Any], mode: str
+) -> dict[str, Any]:
+    """``run_metadata.json`` payload shared by the two eval runners."""
+
+    return {
+        "host": socket.gethostname(),
+        "run_id": config.run_id,
+        "mode": mode,
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "artifact_uri": config.artifact_uri,
+        "base_model_id": manifest["base_model_id"],
+        "calibration_dataset_spec": manifest["dataset_spec"],
+        "eval_dataset_spec": config.eval_dataset_spec,
+        "destination": s3_destination(
+            config.results_bucket, config.results_prefix
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Torch-dependent helpers (imported lazily by callers)
 # ---------------------------------------------------------------------------
-
-
-def embedding_device(model: Any) -> Any:
-    """Return the device hosting the input embedding for ``model``.
-
-    Sharded ``device_map='auto'`` models expose ``hf_device_map`` keyed by
-    submodule name; the embedding key varies across architectures so we try a
-    short list. Falls back to the first parameter's device, then CPU.
-    """
-
-    import torch
-
-    device_map = getattr(model, "hf_device_map", None)
-    if isinstance(device_map, dict):
-        for key in (
-            "model.embed_tokens",
-            "transformer.wte",
-            "model.tok_embeddings",
-        ):
-            if key in device_map:
-                value = device_map[key]
-                return torch.device(value) if isinstance(value, str) else value
-    try:
-        return next(model.parameters()).device
-    except StopIteration:
-        return torch.device("cpu")
 
 
 def collect_wanda_activation_stats(
@@ -145,14 +314,20 @@ def collect_wanda_activation_stats(
     monolithic runner (run id ``20260504T001802Z-f041ba``). Hooks are
     attached to every ``Linear`` module, calibration texts are tokenized
     individually with truncation, and we accumulate ``sum(x**2)`` per input
-    channel. The CPU-side accumulator avoids GPU memory spikes for the
-    biggest layers.
+    channel. Accumulation happens in float64 on each layer's own device; a
+    per-hook ``.cpu()`` would force a CUDA sync for every Linear on every
+    calibration text, so the single device-to-host copy is deferred until
+    all texts are processed.
     """
 
     import torch
     from torch import nn
 
-    device_map = getattr(model, "hf_device_map", None) or {}
+    ensure_src_on_path()
+    from pruning_metrics.evals.coding.teacher_forcing import (
+        resolve_input_device,
+    )
+
     LOGGER.info(
         "Collecting WANDA activation stats over %d calibration texts (max_tokens=%d)",
         len(calibration_texts),
@@ -170,7 +345,7 @@ def collect_wanda_activation_stats(
                 return
             x = inputs[0].detach()
             flat = x.reshape(-1, x.shape[-1]).to(dtype=torch.float32)
-            local_sumsq = torch.sum(flat * flat, dim=0).to(dtype=torch.float64).cpu()
+            local_sumsq = torch.sum(flat * flat, dim=0).to(dtype=torch.float64)
             if layer_name in sumsq:
                 sumsq[layer_name] += local_sumsq
             else:
@@ -185,6 +360,7 @@ def collect_wanda_activation_stats(
 
     try:
         with torch.no_grad():
+            target_device = resolve_input_device(model)
             for index, text in enumerate(calibration_texts, start=1):
                 encoded = tokenizer(
                     text,
@@ -192,7 +368,6 @@ def collect_wanda_activation_stats(
                     truncation=True,
                     max_length=max_tokens,
                 )
-                target_device = embedding_device(model)
                 encoded = {k: v.to(target_device) for k, v in encoded.items()}
                 model(**encoded)
                 if index % 10 == 0 or index == len(calibration_texts):
@@ -207,6 +382,7 @@ def collect_wanda_activation_stats(
 
     rms_by_layer: dict[str, torch.Tensor] = {}
     for name, accumulated in sumsq.items():
+        accumulated = accumulated.cpu()
         count = counts.get(name, 0)
         if count == 0:
             rms_by_layer[name] = torch.ones_like(accumulated, dtype=torch.float32)
@@ -294,9 +470,10 @@ def apply_wanda_pruning(
             largest=False,
             sorted=False,
         )
-        mask = torch.zeros_like(weight, dtype=torch.bool)
-        mask.scatter_(1, prune_indices, True)
-        weight[mask] = 0
+        # topk indices are distinct within each row, so scattering zeros is
+        # equivalent to a boolean-mask assignment while touching only the
+        # pruned entries (no full-size mask allocation).
+        weight.scatter_(1, prune_indices, 0.0)
 
 
 def load_base_model(
@@ -343,6 +520,38 @@ def load_base_model(
         torch.cuda.device_count(),
     )
     return tokenizer, model
+
+
+def load_model_stats_snapshot(
+    manifest: dict[str, Any], artifact_dir: Path
+) -> tuple[Any, Any, dict[str, Any], dict[str, Any]]:
+    """Load the manifest's base model, the WANDA stats, and a weight snapshot.
+
+    Returns ``(tokenizer, model, stats, snapshot)`` -- everything the eval
+    runners need before entering their per-level loop.
+    """
+
+    tokenizer, model = load_base_model(manifest["base_model_id"])
+
+    import torch
+
+    stats_path = artifact_dir / "wanda_stats.pt"
+    LOGGER.info("Loading WANDA stats from %s", stats_path)
+    stats = torch.load(stats_path, map_location="cpu")
+    snapshot = snapshot_linear_weights(model)
+    return tokenizer, model, stats, snapshot
+
+
+def prune_to_level(
+    model: Any,
+    stats: dict[str, Any],
+    snapshot: dict[str, Any],
+    level: float,
+) -> None:
+    """Restore pristine weights, then apply per-row WANDA at ``level`` percent."""
+
+    restore_linear_weights(model, snapshot)
+    apply_wanda_pruning(model, stats, prune_ratio=float(level) / 100.0)
 
 
 def level_label(level: float) -> str:

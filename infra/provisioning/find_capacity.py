@@ -7,7 +7,7 @@ no idle hosts at any given moment. This script walks a priority list of
 per AZ, filters out AZs that do not currently advertise the instance type,
 and prints the cheapest option as JSON.
 
-The output is consumed by ``infra/ec2/launch_gpu_instance.py`` (and a
+The output is consumed by ``infra/provisioning/launch_gpu_instance.py`` (and a
 launcher subagent) which then issues ``RunInstances`` with the corresponding
 ``InstanceMarketOptions`` block.
 
@@ -15,7 +15,7 @@ Example
 -------
 ::
 
-    AWS_PROFILE=rengz python infra/ec2/find_capacity.py \\
+    AWS_PROFILE=rengz python infra/provisioning/find_capacity.py \\
         --regions us-east-1,us-west-2,us-east-2 \\
         --instance-types p5.48xlarge,p4de.24xlarge,p4d.24xlarge
 
@@ -141,8 +141,8 @@ def find_candidates(
     candidates: list[dict[str, Any]] = []
     # Outer loop over regions then instance types preserves priority semantics
     # for ties, but we do not stop early so the caller can see fallbacks.
-    for region in regions:
-        for instance_type in instance_types:
+    for region_index, region in enumerate(regions):
+        for type_index, instance_type in enumerate(instance_types):
             try:
                 offered_azs = offered_in_region(region, instance_type)
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -177,10 +177,8 @@ def find_candidates(
                             spot_price * max_price_multiplier, 4
                         ),
                         "observed_at_utc": prices[az]["timestamp"].isoformat(),
-                        "priority_region_index": regions.index(region),
-                        "priority_instance_index": instance_types.index(
-                            instance_type
-                        ),
+                        "priority_region_index": region_index,
+                        "priority_instance_index": type_index,
                     }
                 )
     # Sort: keep configured priority first; tie-break on price.

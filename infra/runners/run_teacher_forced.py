@@ -17,11 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import socket
 import sys
 import time
-import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,18 +29,22 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # pylint: disable=wrong-import-position
-from infra.ec2._runner_common import (  # noqa: E402
+from infra.runners._runner_common import (  # noqa: E402
     LOGGER,
-    apply_wanda_pruning,
+    add_common_runner_args,
+    add_eval_artifact_args,
     configure_logging,
+    download_calibration_artifact,
     env_or,
+    eval_run_metadata,
     level_label,
-    load_base_model,
-    parse_pruning_levels,
-    restore_linear_weights,
-    s3_download_file,
+    load_model_stats_snapshot,
+    prune_to_level,
+    resolve_eval_defaults,
     s3_sync,
-    snapshot_linear_weights,
+    serialise_config,
+    split_csv,
+    write_json,
 )
 from pruning_metrics.evals.coding.teacher_forcing import (  # noqa: E402
     compute_teacher_forced_logprobs,
@@ -96,11 +98,6 @@ class TeacherForcedConfig:
     results_prefix: str
 
 
-def _default_run_id() -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{stamp}-{uuid.uuid4().hex[:6]}"
-
-
 def parse_args() -> argparse.Namespace:
     """CLI for the teacher-forced runner."""
 
@@ -109,18 +106,7 @@ def parse_args() -> argparse.Namespace:
             "Teacher-forced next-token log-probabilities per pruning level."
         )
     )
-    parser.add_argument(
-        "--artifact-uri",
-        default=env_or("PRUNING_ARTIFACT_URI", default=""),
-    )
-    parser.add_argument(
-        "--eval-dataset-spec",
-        default=env_or("EVAL_DATASET_SPEC", "DATASET_SPEC", default=""),
-    )
-    parser.add_argument(
-        "--eval-levels",
-        default=env_or("EVAL_LEVELS", default=""),
-    )
+    add_eval_artifact_args(parser)
     parser.add_argument(
         "--tf-seed",
         type=int,
@@ -146,26 +132,8 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(env_or("TF_TOP_K", default="5")),
     )
-    parser.add_argument(
-        "--output-dir",
-        default=env_or("RESULTS_LOCAL_DIR", default="/opt/results"),
-    )
-    parser.add_argument(
-        "--results-bucket",
-        default=env_or("RESULTS_BUCKET", default=""),
-    )
-    parser.add_argument(
-        "--results-prefix",
-        default=env_or("RESULTS_PREFIX", default="teacher_forced"),
-    )
-    parser.add_argument("--run-id", default=env_or("RUN_ID", default=_default_run_id()))
+    add_common_runner_args(parser, default_results_prefix="teacher_forced")
     return parser.parse_args()
-
-
-def _split_csv(raw: str) -> tuple[str, ...] | None:
-    if not raw or raw.strip().lower() in ("", "none"):
-        return None
-    return tuple(token.strip() for token in raw.split(",") if token.strip())
 
 
 def main() -> int:
@@ -178,44 +146,25 @@ def main() -> int:
     if args.num_tf_samples < 0:
         raise SystemExit("--num-tf-samples must be >= 0 (0 = all test records)")
 
-    artifact_dir = Path(args.output_dir) / "_artifact"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-
-    manifest_uri = args.artifact_uri.rstrip("/") + "/manifest.json"
-    stats_uri = args.artifact_uri.rstrip("/") + "/wanda_stats.pt"
-    LOGGER.info("Downloading manifest %s", manifest_uri)
-    s3_download_file(manifest_uri, artifact_dir / "manifest.json")
-    s3_download_file(stats_uri, artifact_dir / "wanda_stats.pt")
-    manifest = json.loads(
-        (artifact_dir / "manifest.json").read_text(encoding="utf-8")
+    manifest, artifact_dir = download_calibration_artifact(
+        args.artifact_uri, Path(args.output_dir)
     )
-
-    eval_dataset_spec = args.eval_dataset_spec or manifest["dataset_spec"]
-    eval_levels_raw = args.eval_levels or ",".join(
-        str(level) for level in manifest["pruning_levels"]
-    )
-    eval_levels = parse_pruning_levels(eval_levels_raw)
 
     config = TeacherForcedConfig(
         artifact_uri=args.artifact_uri,
-        eval_dataset_spec=eval_dataset_spec,
-        eval_levels=eval_levels,
         tf_seed=args.tf_seed,
         num_tf_samples=args.num_tf_samples,
-        explicit_sample_task_ids=_split_csv(args.explicit_sample_task_ids),
+        explicit_sample_task_ids=split_csv(args.explicit_sample_task_ids),
         top_k=args.top_k,
-        split_seed=int(manifest["split_seed"]),
-        train_frac=float(manifest["train_frac"]),
-        explicit_train_ids=tuple(manifest.get("explicit_train_ids") or ()) or None,
-        explicit_test_ids=tuple(manifest.get("explicit_test_ids") or ()) or None,
         output_dir=Path(args.output_dir),
         run_id=args.run_id,
         results_bucket=args.results_bucket,
         results_prefix=f"{args.results_prefix.strip('/')}/{args.run_id}",
+        **resolve_eval_defaults(manifest, args),
     )
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    LOGGER.info("Teacher-forced config: %s", json.dumps(_serialise_config(config)))
+    LOGGER.info("Teacher-forced config: %s", json.dumps(serialise_config(config)))
     _write_run_metadata(config, manifest)
 
     LOGGER.info("Building eval adapter from spec %r", config.eval_dataset_spec)
@@ -237,12 +186,9 @@ def main() -> int:
     )
     _write_sample_selection(config, sampled_records)
 
-    tokenizer, model = load_base_model(manifest["base_model_id"])
-    import torch
-
-    LOGGER.info("Loading WANDA stats")
-    stats = torch.load(artifact_dir / "wanda_stats.pt", map_location="cpu")
-    snapshot = snapshot_linear_weights(model)
+    tokenizer, model, stats, snapshot = load_model_stats_snapshot(
+        manifest, artifact_dir
+    )
 
     sample_summaries: dict[str, list[dict[str, Any]]] = {
         record.task_id: [] for record in sampled_records
@@ -252,8 +198,7 @@ def main() -> int:
     try:
         for level in config.eval_levels:
             LOGGER.info("=== Pruning level %s%% ===", level_label(level))
-            restore_linear_weights(model, snapshot)
-            apply_wanda_pruning(model, stats, prune_ratio=float(level) / 100.0)
+            prune_to_level(model, stats, snapshot, level)
 
             for sample_idx, record in enumerate(sampled_records):
                 if not record.target_text:
@@ -397,47 +342,13 @@ def _safe_filename(task_id: str) -> str:
     return task_id.replace("/", "_").replace(" ", "_")
 
 
-def _serialise_config(config: TeacherForcedConfig) -> dict[str, Any]:
-    payload = asdict(config)
-    payload["output_dir"] = str(config.output_dir)
-    payload["eval_levels"] = list(config.eval_levels)
-    payload["explicit_train_ids"] = (
-        list(config.explicit_train_ids) if config.explicit_train_ids else None
-    )
-    payload["explicit_test_ids"] = (
-        list(config.explicit_test_ids) if config.explicit_test_ids else None
-    )
-    payload["explicit_sample_task_ids"] = (
-        list(config.explicit_sample_task_ids)
-        if config.explicit_sample_task_ids
-        else None
-    )
-    return payload
-
-
 def _write_run_metadata(
     config: TeacherForcedConfig, manifest: dict[str, Any]
 ) -> None:
-    payload = {
-        "host": socket.gethostname(),
-        "run_id": config.run_id,
-        "mode": "teacher_forced",
-        "started_at_utc": datetime.now(timezone.utc).isoformat(),
-        "artifact_uri": config.artifact_uri,
-        "base_model_id": manifest["base_model_id"],
-        "calibration_dataset_spec": manifest["dataset_spec"],
-        "eval_dataset_spec": config.eval_dataset_spec,
-        "tf_seed": config.tf_seed,
-        "num_tf_samples": config.num_tf_samples,
-        "destination": (
-            f"s3://{config.results_bucket}/{config.results_prefix}/"
-            if config.results_bucket
-            else "(local only)"
-        ),
-    }
-    (config.output_dir / "run_metadata.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
+    payload = eval_run_metadata(config, manifest, "teacher_forced")
+    payload["tf_seed"] = config.tf_seed
+    payload["num_tf_samples"] = config.num_tf_samples
+    write_json(config.output_dir / "run_metadata.json", payload)
 
 
 def _write_sample_selection(
@@ -461,9 +372,7 @@ def _write_sample_selection(
             for r in sampled_records
         ],
     }
-    (config.output_dir / "sample_selection.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
+    write_json(config.output_dir / "sample_selection.json", payload)
 
 
 def _write_summary(
@@ -495,9 +404,7 @@ def _write_summary(
         ),
         "elapsed_seconds": elapsed_seconds,
     }
-    (config.output_dir / "summary.json").write_text(
-        json.dumps(payload, indent=2, default=str), encoding="utf-8"
-    )
+    write_json(config.output_dir / "summary.json", payload)
 
 
 if __name__ == "__main__":  # pragma: no cover

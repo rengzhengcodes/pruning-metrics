@@ -2,7 +2,7 @@
 # EC2 user-data bootstrap for the pruning-metrics GPU runners.
 #
 # This script runs once on first boot of the spot GPU instance. It is rendered
-# by infra/ec2/launch_gpu_instance.py with the following template variables
+# by infra/provisioning/launch_gpu_instance.py with the following template variables
 # substituted in:
 #
 # See ``render_userdata`` in launch_gpu_instance.py for the full list of
@@ -53,7 +53,6 @@ RESULTS_PREFIX='__RESULTS_PREFIX__'
 RUN_ID='__RUN_ID__'
 HF_TOKEN='__HF_TOKEN__'
 RUNNER_RELPATH='__RUNNER_RELPATH__'
-RUNNER_CLI_ARGS='__RUNNER_CLI_ARGS__'
 
 WORK_DIR=/opt/pruning-metrics
 RESULTS_DIR=/opt/results
@@ -116,28 +115,28 @@ do
     fi
 done
 
+# Runtime deps installed on top of the AMI's python. Keep the shared pins
+# in sync with pyproject.toml [project.dependencies]; the extra entries
+# (transformers/accelerate/huggingface_hub) are GPU-only runtime deps the
+# local package deliberately does not declare.
+PIP_PACKAGES=(
+    "transformers>=4.42"
+    "accelerate>=0.30"
+    "datasets>=2.20"
+    "boto3>=1.34"
+    "python-dotenv>=1.0"
+    "huggingface_hub>=0.23"
+)
+
 if [ -z "$PYTHON_BIN" ]; then
     echo "No DLAMI python had torch pre-installed; bootstrapping system python."
     apt-get update -y
     apt-get install -y python3-pip python3-venv
     PYTHON_BIN=/usr/bin/python3
     "$PYTHON_BIN" -m pip install --upgrade pip
-    "$PYTHON_BIN" -m pip install --upgrade \
-        "torch>=2.3" \
-        "transformers>=4.42" \
-        "accelerate>=0.30" \
-        "datasets>=2.18" \
-        "boto3>=1.34" \
-        "python-dotenv>=1.0" \
-        "huggingface_hub>=0.23"
+    "$PYTHON_BIN" -m pip install --upgrade "torch>=2.3" "${PIP_PACKAGES[@]}"
 else
-    "$PYTHON_BIN" -m pip install --upgrade \
-        "transformers>=4.42" \
-        "accelerate>=0.30" \
-        "datasets>=2.18" \
-        "boto3>=1.34" \
-        "python-dotenv>=1.0" \
-        "huggingface_hub>=0.23"
+    "$PYTHON_BIN" -m pip install --upgrade "${PIP_PACKAGES[@]}"
 fi
 
 echo "Using python: $PYTHON_BIN"
@@ -185,8 +184,6 @@ cd "$WORK_DIR"
 mkdir -p "$RESULTS_DIR"
 
 echo "===== launching $RUNNER_RELPATH ====="
-echo "Extra CLI args: $RUNNER_CLI_ARGS"
-# shellcheck disable=SC2086 -- intentional word-splitting of CLI args
-"$PYTHON_BIN" -u "$WORK_DIR/$RUNNER_RELPATH" $RUNNER_CLI_ARGS
+"$PYTHON_BIN" -u "$WORK_DIR/$RUNNER_RELPATH"
 
 echo "===== $RUNNER_RELPATH finished at $(date -u +%FT%TZ) ====="

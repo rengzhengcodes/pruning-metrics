@@ -29,13 +29,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import random
-import socket
 import sys
 import time
-import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,23 +42,25 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # pylint: disable=wrong-import-position
-from infra.ec2._runner_common import (  # noqa: E402
+from infra.runners._runner_common import (  # noqa: E402
     LOGGER,
-    apply_wanda_pruning,
+    add_common_runner_args,
+    add_eval_artifact_args,
     configure_logging,
-    embedding_device,
+    download_calibration_artifact,
     env_or,
+    eval_run_metadata,
     level_label,
-    load_base_model,
-    parse_pruning_levels,
-    parse_s3_uri,
-    restore_linear_weights,
-    s3_download_file,
+    load_model_stats_snapshot,
+    prune_to_level,
+    resolve_eval_defaults,
     s3_sync,
-    snapshot_linear_weights,
+    serialise_config,
+    write_json,
 )
 from pruning_metrics.evals.coding.teacher_forcing import (  # noqa: E402
     compute_teacher_forced_logprobs,
+    resolve_input_device,
 )
 from pruning_metrics.evals.tasks.base import TaskRecord  # noqa: E402
 from pruning_metrics.evals.tasks.registry import (  # noqa: E402
@@ -112,11 +111,6 @@ class FreeformConfig:
     results_prefix: str
 
 
-def _default_run_id() -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{stamp}-{uuid.uuid4().hex[:6]}"
-
-
 def parse_args() -> argparse.Namespace:
     """CLI for the free-form eval runner."""
 
@@ -125,21 +119,7 @@ def parse_args() -> argparse.Namespace:
             "Free-form evaluation against a pruning calibration artifact."
         )
     )
-    parser.add_argument(
-        "--artifact-uri",
-        default=env_or("PRUNING_ARTIFACT_URI", default=""),
-        help="s3://<bucket>/pruning_artifacts/<run_id>/ produced by calibration.",
-    )
-    parser.add_argument(
-        "--eval-dataset-spec",
-        default=env_or("EVAL_DATASET_SPEC", "DATASET_SPEC", default=""),
-        help="Adapter spec for the eval dataset (defaults to artifact's).",
-    )
-    parser.add_argument(
-        "--eval-levels",
-        default=env_or("EVAL_LEVELS", default=""),
-        help="Comma-separated levels to evaluate (defaults to artifact's).",
-    )
+    add_eval_artifact_args(parser)
     parser.add_argument(
         "--generation-seed",
         type=int,
@@ -161,26 +141,8 @@ def parse_args() -> argparse.Namespace:
         default=int(env_or("MAX_TEST_SAMPLES", default="0") or "0"),
         help="Cap on number of test records evaluated (0 = use all).",
     )
-    parser.add_argument(
-        "--output-dir",
-        default=env_or("RESULTS_LOCAL_DIR", default="/opt/results"),
-    )
-    parser.add_argument(
-        "--results-bucket",
-        default=env_or("RESULTS_BUCKET", default=""),
-    )
-    parser.add_argument(
-        "--results-prefix",
-        default=env_or("RESULTS_PREFIX", default="freeform_eval"),
-    )
-    parser.add_argument("--run-id", default=env_or("RUN_ID", default=_default_run_id()))
+    add_common_runner_args(parser, default_results_prefix="freeform_eval")
     return parser.parse_args()
-
-
-def _split_csv(raw: str) -> tuple[str, ...] | None:
-    if not raw or raw.strip().lower() in ("", "none"):
-        return None
-    return tuple(token.strip() for token in raw.split(",") if token.strip())
 
 
 def main() -> int:
@@ -192,45 +154,29 @@ def main() -> int:
         raise SystemExit("--artifact-uri is required")
 
     # Pull the manifest first so eval defaults align with the artifact.
-    artifact_dir = Path(args.output_dir) / "_artifact"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-
-    manifest_uri = args.artifact_uri.rstrip("/") + "/manifest.json"
-    stats_uri = args.artifact_uri.rstrip("/") + "/wanda_stats.pt"
-    LOGGER.info("Downloading manifest %s", manifest_uri)
-    s3_download_file(manifest_uri, artifact_dir / "manifest.json")
-    s3_download_file(stats_uri, artifact_dir / "wanda_stats.pt")
-    manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
-
-    eval_dataset_spec = args.eval_dataset_spec or manifest["dataset_spec"]
-    eval_levels_raw = args.eval_levels or ",".join(
-        str(level) for level in manifest["pruning_levels"]
+    manifest, artifact_dir = download_calibration_artifact(
+        args.artifact_uri, Path(args.output_dir)
     )
-    eval_levels = parse_pruning_levels(eval_levels_raw)
 
     config = FreeformConfig(
         artifact_uri=args.artifact_uri,
-        eval_dataset_spec=eval_dataset_spec,
-        eval_levels=eval_levels,
         generation_seed=args.generation_seed,
         max_new_tokens=args.max_new_tokens,
         timeout_seconds=args.timeout_seconds,
-        split_seed=int(manifest["split_seed"]),
-        train_frac=float(manifest["train_frac"]),
-        explicit_train_ids=tuple(manifest.get("explicit_train_ids") or ())
-        or None,
-        explicit_test_ids=tuple(manifest.get("explicit_test_ids") or ())
-        or None,
         max_test_samples=args.max_test_samples or None,
         output_dir=Path(args.output_dir),
         run_id=args.run_id,
         results_bucket=args.results_bucket,
         results_prefix=f"{args.results_prefix.strip('/')}/{args.run_id}",
+        **resolve_eval_defaults(manifest, args),
     )
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    LOGGER.info("Free-form eval config: %s", json.dumps(_serialise_config(config)))
-    _write_run_metadata(config, manifest, mode="freeform_eval")
+    LOGGER.info("Free-form eval config: %s", json.dumps(serialise_config(config)))
+    write_json(
+        config.output_dir / "run_metadata.json",
+        eval_run_metadata(config, manifest, "freeform_eval"),
+    )
 
     LOGGER.info("Building eval adapter from spec %r", config.eval_dataset_spec)
     adapter = build_adapter_from_spec(config.eval_dataset_spec)
@@ -250,13 +196,9 @@ def main() -> int:
     if not test_records:
         raise RuntimeError("Eval test split is empty.")
 
-    tokenizer, model = load_base_model(manifest["base_model_id"])
-
-    import torch  # imported here so module loads OK on torch-less workstations
-
-    LOGGER.info("Loading WANDA stats from %s", artifact_dir / "wanda_stats.pt")
-    stats = torch.load(artifact_dir / "wanda_stats.pt", map_location="cpu")
-    snapshot = snapshot_linear_weights(model)
+    tokenizer, model, stats, snapshot = load_model_stats_snapshot(
+        manifest, artifact_dir
+    )
 
     level_summaries: list[dict[str, Any]] = []
     started = time.monotonic()
@@ -264,8 +206,7 @@ def main() -> int:
     try:
         for level in config.eval_levels:
             LOGGER.info("=== Pruning level %s%% ===", level_label(level))
-            restore_linear_weights(model, snapshot)
-            apply_wanda_pruning(model, stats, prune_ratio=float(level) / 100.0)
+            prune_to_level(model, stats, snapshot, level)
 
             level_dir = config.output_dir / f"level={level_label(level)}"
             level_dir.mkdir(parents=True, exist_ok=True)
@@ -281,7 +222,7 @@ def main() -> int:
                 base_model_id=manifest["base_model_id"],
             )
             level_summaries.append(level_summary)
-            _write_summary(config, level_summaries, manifest, mode="freeform_eval")
+            _write_summary(config, level_summaries, manifest)
             s3_sync(
                 local_dir=config.output_dir,
                 bucket=config.results_bucket,
@@ -292,7 +233,6 @@ def main() -> int:
             config,
             level_summaries,
             manifest,
-            mode="freeform_eval",
             elapsed_seconds=time.monotonic() - started,
             ended=True,
         )
@@ -359,7 +299,7 @@ def _evaluate_level(
 
     import torch
 
-    target_device = embedding_device(model)
+    target_device = resolve_input_device(model)
     pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
 
     statuses: dict[str, int] = {}
@@ -484,53 +424,16 @@ def _evaluate_level(
     }
 
 
-def _serialise_config(config: FreeformConfig) -> dict[str, Any]:
-    payload = asdict(config)
-    payload["output_dir"] = str(config.output_dir)
-    payload["eval_levels"] = list(config.eval_levels)
-    payload["explicit_train_ids"] = (
-        list(config.explicit_train_ids) if config.explicit_train_ids else None
-    )
-    payload["explicit_test_ids"] = (
-        list(config.explicit_test_ids) if config.explicit_test_ids else None
-    )
-    return payload
-
-
-def _write_run_metadata(
-    config: FreeformConfig, manifest: dict[str, Any], *, mode: str
-) -> None:
-    payload = {
-        "host": socket.gethostname(),
-        "run_id": config.run_id,
-        "mode": mode,
-        "started_at_utc": datetime.now(timezone.utc).isoformat(),
-        "artifact_uri": config.artifact_uri,
-        "base_model_id": manifest["base_model_id"],
-        "calibration_dataset_spec": manifest["dataset_spec"],
-        "eval_dataset_spec": config.eval_dataset_spec,
-        "destination": (
-            f"s3://{config.results_bucket}/{config.results_prefix}/"
-            if config.results_bucket
-            else "(local only)"
-        ),
-    }
-    (config.output_dir / "run_metadata.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
-
-
 def _write_summary(
     config: FreeformConfig,
     level_summaries: list[dict[str, Any]],
     manifest: dict[str, Any],
     *,
-    mode: str,
     elapsed_seconds: float | None = None,
     ended: bool = False,
 ) -> None:
     payload = {
-        "mode": mode,
+        "mode": "freeform_eval",
         "run_id": config.run_id,
         "artifact_uri": config.artifact_uri,
         "base_model_id": manifest["base_model_id"],
@@ -548,9 +451,7 @@ def _write_summary(
         ),
         "elapsed_seconds": elapsed_seconds,
     }
-    (config.output_dir / "summary.json").write_text(
-        json.dumps(payload, indent=2, default=str), encoding="utf-8"
-    )
+    write_json(config.output_dir / "summary.json", payload)
 
 
 if __name__ == "__main__":  # pragma: no cover

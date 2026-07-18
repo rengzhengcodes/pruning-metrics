@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 
 # Project-specific transients
-infra/ec2/_last_userdata.sh
+infra/provisioning/_last_userdata.sh
 .aws-sso-cache/
 artifacts/
 

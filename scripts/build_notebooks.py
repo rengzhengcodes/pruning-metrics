@@ -164,7 +164,7 @@ def build_notebook_01() -> None:
             """
             ## Run the bootstrap script
 
-            `infra/aws/setup/bootstrap_ec2_resources.py` is idempotent. It
+            `infra/provisioning/bootstrap_ec2_resources.py` is idempotent. It
             checks for the bucket / role / profile and creates anything
             missing. Output below is a single JSON summary.
             """

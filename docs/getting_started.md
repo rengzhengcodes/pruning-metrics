@@ -120,5 +120,5 @@ log-prob, rank, top-`TF_TOP_K` alternatives) plus a per-level summary.
   determinism contract.
 * [`tasks.md`](tasks.md): how to add a new task type (math word problems
   beyond GSM8K, classification, dialog quality, etc.).
-* [`infra/ec2/README.md`](../infra/ec2/README.md): operator runbook for
+* [`infra/README.md`](../infra/README.md): operator runbook for
   monitoring, SSM Session Manager access, spot interruption recovery.

@@ -8,9 +8,9 @@ the project's instance profile attached.
 
 Supported ``--runner`` values:
 
-* ``pruning_calibration`` -> ``infra/ec2/run_pruning_calibration.py``
-* ``freeform_eval``       -> ``infra/ec2/run_freeform_eval.py``
-* ``teacher_forced``      -> ``infra/ec2/run_teacher_forced.py``
+* ``pruning_calibration`` -> ``infra/runners/run_pruning_calibration.py``
+* ``freeform_eval``       -> ``infra/runners/run_freeform_eval.py``
+* ``teacher_forced``      -> ``infra/runners/run_teacher_forced.py``
 
 Runner-specific knobs are passed via ``--runner-env KEY=VALUE`` (repeatable)
 or ``--runner-env-json '{"KEY": "VALUE"}'``. Each runner consumes those env
@@ -27,7 +27,6 @@ import os
 import shlex
 import sys
 import tarfile
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -35,8 +34,12 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+# pylint: disable=wrong-import-position
+from infra.runners._runner_common import default_run_id  # noqa: E402
+
 USERDATA_TEMPLATE = Path(__file__).with_name("userdata_bootstrap.sh")
 
 # Items we never need on the GPU box; trimming keeps the tarball small enough
@@ -72,9 +75,9 @@ DLAMI_PARAMETERS_PRIORITY = (
 
 # Path of each runner relative to the repo root.
 RUNNER_RELPATHS: dict[str, str] = {
-    "pruning_calibration": "infra/ec2/run_pruning_calibration.py",
-    "freeform_eval": "infra/ec2/run_freeform_eval.py",
-    "teacher_forced": "infra/ec2/run_teacher_forced.py",
+    "pruning_calibration": "infra/runners/run_pruning_calibration.py",
+    "freeform_eval": "infra/runners/run_freeform_eval.py",
+    "teacher_forced": "infra/runners/run_teacher_forced.py",
 }
 
 
@@ -112,14 +115,6 @@ def parse_args() -> argparse.Namespace:
         "--runner-env-json",
         default="",
         help="JSON object of runner-specific env vars (overrides --runner-env).",
-    )
-    parser.add_argument(
-        "--runner-cli-args",
-        default="",
-        help=(
-            "Optional argv string appended verbatim to the runner invocation "
-            "in user-data. Most callers should rely on --runner-env instead."
-        ),
     )
     parser.add_argument(
         "--results-bucket",
@@ -293,7 +288,6 @@ def render_userdata(
     hf_token: str,
     runner_relpath: str,
     runner_env_exports: str,
-    runner_cli_args: str,
     shutdown_on_exit: bool,
 ) -> str:
     """Substitute template placeholders in the user-data script."""
@@ -307,7 +301,6 @@ def render_userdata(
         "__RUN_ID__": run_id,
         "__HF_TOKEN__": hf_token,
         "__RUNNER_RELPATH__": runner_relpath,
-        "__RUNNER_CLI_ARGS__": runner_cli_args,
         "__RUNNER_ENV_EXPORTS__": runner_env_exports,
     }
     for placeholder, value in replacements.items():
@@ -322,11 +315,6 @@ def render_userdata(
 # ---------------------------------------------------------------------------
 
 
-def _default_run_id() -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{stamp}-{uuid.uuid4().hex[:6]}"
-
-
 def main() -> int:
     """CLI entry point: build tarball, upload, render user-data, RunInstances."""
 
@@ -338,7 +326,7 @@ def main() -> int:
     runner_env = collect_runner_env(args)
     runner_env_exports = render_runner_env_exports(runner_env)
 
-    run_id = args.run_id or _default_run_id()
+    run_id = args.run_id or default_run_id()
     results_prefix = args.results_prefix.strip("/")
     repo_tarball_key = f"{results_prefix}/{run_id}/code/repo.tar.gz"
 
@@ -375,7 +363,6 @@ def main() -> int:
         hf_token=args.hf_token,
         runner_relpath=runner_relpath,
         runner_env_exports=runner_env_exports,
-        runner_cli_args=args.runner_cli_args,
         shutdown_on_exit=not args.no_shutdown_on_exit,
     )
     encoded_userdata = base64.b64encode(userdata.encode("utf-8")).decode("ascii")
@@ -401,7 +388,7 @@ def main() -> int:
 
     if args.dry_run:
         print("--dry-run set; skipping RunInstances.", file=sys.stderr)
-        (REPO_ROOT / "infra" / "ec2" / "_last_userdata.sh").write_text(
+        (REPO_ROOT / "infra" / "provisioning" / "_last_userdata.sh").write_text(
             userdata, encoding="utf-8"
         )
         return 0

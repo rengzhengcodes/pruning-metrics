@@ -16,7 +16,7 @@ Usage
 -----
 ::
 
-    python infra/aws/setup/bootstrap_ec2_resources.py \\
+    python infra/provisioning/bootstrap_ec2_resources.py \\
         --bucket pruning-metrics-results-414266451290 \\
         --region us-east-1 \\
         --role-name pruning-metrics-ec2

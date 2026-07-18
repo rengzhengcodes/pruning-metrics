@@ -1,6 +1,6 @@
 """Tests for the canonical WANDA per-output-row pruning routine.
 
-The pruning helper in :mod:`infra.ec2._runner_common.apply_wanda_pruning`
+The pruning helper in :mod:`infra.runners._runner_common.apply_wanda_pruning`
 should:
 
 1. Score weights as ``|W| * rms(input_channel)``.
@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 # pylint: disable=wrong-import-position
-from infra.ec2._runner_common import apply_wanda_pruning  # noqa: E402
+from infra.runners._runner_common import apply_wanda_pruning  # noqa: E402
 
 
 @pytest.fixture
