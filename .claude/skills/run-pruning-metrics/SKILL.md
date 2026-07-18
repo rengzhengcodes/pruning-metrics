@@ -30,7 +30,7 @@ Linux, system python 3.12, in this container.
 python3 .claude/skills/run-pruning-metrics/driver.py setup       # venv + all deps (~2 min clean)
 python3 .claude/skills/run-pruning-metrics/driver.py smoke       # 4 metrics on real cached data, <5 s
 python3 .claude/skills/run-pruning-metrics/driver.py test        # pytest: 75 passed, 2 skipped (~11 s)
-python3 .claude/skills/run-pruning-metrics/driver.py notebook notebooks/experiment/05_tsne.ipynb   # ~40 s
+python3 .claude/skills/run-pruning-metrics/driver.py notebook notebooks/experiment/05_tsne.ipynb   # ~50 s
 python3 .claude/skills/run-pruning-metrics/driver.py figures     # list output PNGs with mtimes
 python3 .claude/skills/run-pruning-metrics/driver.py aws-check   # read-only STS identity, never launches
 ```
@@ -49,14 +49,15 @@ python3 .claude/skills/run-pruning-metrics/driver.py aws-check   # read-only STS
   torch is deliberately not installed on workstations.
 
 **Verify a change visually:** run the notebook, then `figures` — the PNGs under
-`notebooks/experiment/results/{tsne_figures,umap_figures,cal_signal_figures}/`
+`notebooks/experiment/results/{tsne,umap,pca,isomap,lle}_figures/` and
+`notebooks/experiment/results/cal_signal_figures/`
 regenerate in place with fresh mtimes; open one to confirm it rendered.
 
 Notebook execution matrix (all verified):
 
 | Notebook | Needs AWS? | Time | Outputs |
 |---|---|---|---|
-| `notebooks/experiment/05_tsne.ipynb` | no — fully cache-local | ~40 s | `results/tsne_figures/`, `results/umap_figures/`, `results/cal_signal_figures/` |
+| `notebooks/experiment/05_tsne.ipynb` | no — fully cache-local | ~50 s | `results/{tsne,umap,pca,isomap,lle}_figures/`, `results/cal_signal_figures/` |
 | `notebooks/experiment/04_metric_spaces.ipynb` | yes, read-only S3 (9 small summary.json + listings; run `aws-check` first) | ~6.5 min | `results/metric_space_*.csv`, pairwise `.npy` caches |
 | `notebooks/experiment/01–03`, `notebooks/aws_tutorial/01–04` | yes — **launches paid GPU spot instances** (01/02) | hours | S3 |
 
