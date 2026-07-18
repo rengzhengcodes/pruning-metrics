@@ -33,7 +33,6 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # pylint: disable=wrong-import-position
 from infra.runners._runner_common import (  # noqa: E402
@@ -41,6 +40,7 @@ from infra.runners._runner_common import (  # noqa: E402
     add_common_runner_args,
     collect_wanda_activation_stats,
     configure_logging,
+    ensure_src_on_path,
     env_or,
     load_base_model,
     parse_pruning_levels,
@@ -50,6 +50,9 @@ from infra.runners._runner_common import (  # noqa: E402
     split_csv,
     write_json,
 )
+
+ensure_src_on_path()
+
 from pruning_metrics.evals.tasks.registry import (  # noqa: E402
     build_adapter_from_spec,
 )
@@ -160,7 +163,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-calibration-samples",
         type=int,
-        default=int(env_or("MAX_CALIBRATION_SAMPLES", default="0") or "0"),
+        default=int(env_or("MAX_CALIBRATION_SAMPLES", default="0")),
         help="Cap on number of train prompts used (0 = use all).",
     )
     parser.add_argument(

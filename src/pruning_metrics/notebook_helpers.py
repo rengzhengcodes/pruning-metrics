@@ -24,7 +24,6 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -734,12 +733,17 @@ def wait_for_instance_terminated(  # pylint: disable=too-many-arguments
 
 
 def render_run_id_default() -> str:
-    """Generate a notebook-side run id (UTC timestamp + short uuid)."""
+    """Generate a notebook-side run id.
 
-    import uuid
+    Delegates to the runners' canonical generator so the format cannot
+    drift between notebook-side and launcher-side ids.
+    """
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{stamp}-{uuid.uuid4().hex[:6]}"
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from infra.runners._runner_common import default_run_id
+
+    return default_run_id()
 
 
 def _last_json_object(text: str) -> dict[str, Any] | None:

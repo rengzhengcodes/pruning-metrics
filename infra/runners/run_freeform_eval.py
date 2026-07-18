@@ -33,13 +33,11 @@ import random
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # pylint: disable=wrong-import-position
 from infra.runners._runner_common import (  # noqa: E402
@@ -48,16 +46,20 @@ from infra.runners._runner_common import (  # noqa: E402
     add_eval_artifact_args,
     configure_logging,
     download_calibration_artifact,
+    ensure_src_on_path,
     env_or,
     eval_run_metadata,
+    eval_summary_payload,
     level_label,
     load_model_stats_snapshot,
-    prune_to_level,
     resolve_eval_defaults,
-    s3_sync,
+    run_level_sweep,
     serialise_config,
     write_json,
 )
+
+ensure_src_on_path()
+
 from pruning_metrics.evals.coding.teacher_forcing import (  # noqa: E402
     compute_teacher_forced_logprobs,
     resolve_input_device,
@@ -138,7 +140,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-test-samples",
         type=int,
-        default=int(env_or("MAX_TEST_SAMPLES", default="0") or "0"),
+        default=int(env_or("MAX_TEST_SAMPLES", default="0")),
         help="Cap on number of test records evaluated (0 = use all).",
     )
     add_common_runner_args(parser, default_results_prefix="freeform_eval")
@@ -201,51 +203,34 @@ def main() -> int:
     )
 
     level_summaries: list[dict[str, Any]] = []
-    started = time.monotonic()
 
-    try:
-        for level in config.eval_levels:
-            LOGGER.info("=== Pruning level %s%% ===", level_label(level))
-            prune_to_level(model, stats, snapshot, level)
-
-            level_dir = config.output_dir / f"level={level_label(level)}"
-            level_dir.mkdir(parents=True, exist_ok=True)
-            records_path = level_dir / "eval_records.jsonl"
-            level_summary = _evaluate_level(
+    def _per_level(level: float) -> None:
+        level_dir = config.output_dir / f"level={level_label(level)}"
+        level_dir.mkdir(parents=True, exist_ok=True)
+        level_summaries.append(
+            _evaluate_level(
                 level=level,
                 model=model,
                 tokenizer=tokenizer,
                 adapter=adapter,
                 test_records=test_records,
                 config=config,
-                records_path=records_path,
+                records_path=level_dir / "eval_records.jsonl",
                 base_model_id=manifest["base_model_id"],
             )
-            level_summaries.append(level_summary)
-            _write_summary(config, level_summaries, manifest)
-            s3_sync(
-                local_dir=config.output_dir,
-                bucket=config.results_bucket,
-                key_prefix=config.results_prefix,
-            )
-    finally:
-        _write_summary(
-            config,
-            level_summaries,
-            manifest,
-            elapsed_seconds=time.monotonic() - started,
-            ended=True,
         )
-        s3_sync(
-            local_dir=config.output_dir,
-            bucket=config.results_bucket,
-            key_prefix=config.results_prefix,
-        )
-        LOGGER.info(
-            "Free-form eval finished. Results: s3://%s/%s/",
-            config.results_bucket,
-            config.results_prefix,
-        )
+
+    run_level_sweep(
+        config,
+        model=model,
+        stats=stats,
+        snapshot=snapshot,
+        mode_label="Free-form eval",
+        per_level=_per_level,
+        write_summary=lambda **kw: _write_summary(
+            config, level_summaries, manifest, **kw
+        ),
+    )
 
     return 0
 
@@ -432,25 +417,22 @@ def _write_summary(
     elapsed_seconds: float | None = None,
     ended: bool = False,
 ) -> None:
-    payload = {
-        "mode": "freeform_eval",
-        "run_id": config.run_id,
-        "artifact_uri": config.artifact_uri,
-        "base_model_id": manifest["base_model_id"],
-        "calibration_dataset_spec": manifest["dataset_spec"],
-        "eval_dataset_spec": config.eval_dataset_spec,
-        "split_seed": config.split_seed,
-        "train_frac": config.train_frac,
-        "generation_seed": config.generation_seed,
-        "max_new_tokens": config.max_new_tokens,
-        "timeout_seconds": config.timeout_seconds,
-        "completed_levels": [s["pruning_level"] for s in level_summaries],
-        "levels": level_summaries,
-        "ended_at_utc": (
-            datetime.now(timezone.utc).isoformat() if ended else None
-        ),
-        "elapsed_seconds": elapsed_seconds,
-    }
+    payload = eval_summary_payload(
+        config,
+        manifest,
+        "freeform_eval",
+        {
+            "split_seed": config.split_seed,
+            "train_frac": config.train_frac,
+            "generation_seed": config.generation_seed,
+            "max_new_tokens": config.max_new_tokens,
+            "timeout_seconds": config.timeout_seconds,
+            "completed_levels": [s["pruning_level"] for s in level_summaries],
+            "levels": level_summaries,
+        },
+        ended=ended,
+        elapsed_seconds=elapsed_seconds,
+    )
     write_json(config.output_dir / "summary.json", payload)
 
 

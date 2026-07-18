@@ -98,10 +98,10 @@ def ensure_bucket(s3_client: Any, bucket: str, region: str) -> None:
         print(f"S3 bucket already exists: {bucket}")
         return
     except ClientError as exc:
+        # Anything but "not found" (403 included) means we can't claim the
+        # bucket as ours; propagate rather than trying to create over it.
         if exc.response.get("Error", {}).get("Code") not in ("404", "NoSuchBucket"):
-            # 403 still means we can't see it; treat as fatal so we don't pretend it's ours.
-            if exc.response.get("Error", {}).get("Code") == "403":
-                raise
+            raise
 
     print(f"Creating S3 bucket {bucket} in {region}")
     if region == "us-east-1":
@@ -161,6 +161,7 @@ def ensure_role_and_profile(
         ],
     }
 
+    mutated = False
     try:
         role = iam_client.get_role(RoleName=role_name)["Role"]
         print(f"IAM role already exists: {role['Arn']}")
@@ -172,6 +173,7 @@ def ensure_role_and_profile(
             AssumeRolePolicyDocument=json.dumps(trust_policy),
             Description="EC2 GPU box for pruning-metrics WANDA pipeline.",
         )["Role"]
+        mutated = True
         print(f"Created IAM role {role['Arn']}")
 
     inline_policy = {
@@ -214,17 +216,19 @@ def ensure_role_and_profile(
 
     profile_name = role_name
     try:
-        iam_client.get_instance_profile(InstanceProfileName=profile_name)
+        profile_data = iam_client.get_instance_profile(
+            InstanceProfileName=profile_name
+        )["InstanceProfile"]
         print(f"Instance profile already exists: {profile_name}")
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "NoSuchEntity":
             raise
-        iam_client.create_instance_profile(InstanceProfileName=profile_name)
+        profile_data = iam_client.create_instance_profile(
+            InstanceProfileName=profile_name
+        )["InstanceProfile"]
+        mutated = True
         print(f"Created instance profile {profile_name}.")
 
-    profile_data = iam_client.get_instance_profile(
-        InstanceProfileName=profile_name
-    )["InstanceProfile"]
     if not any(
         attached_role["RoleName"] == role_name
         for attached_role in profile_data["Roles"]
@@ -232,16 +236,20 @@ def ensure_role_and_profile(
         iam_client.add_role_to_instance_profile(
             InstanceProfileName=profile_name, RoleName=role_name
         )
+        mutated = True
         print(f"Added role {role_name} to instance profile {profile_name}.")
     else:
         print(f"Role {role_name} already attached to profile {profile_name}.")
 
-    # IAM is eventually consistent — give it a moment so RunInstances does not fail.
-    time.sleep(5)
+    if mutated:
+        # IAM is eventually consistent — give freshly created/attached
+        # resources a moment so RunInstances does not fail. No-op re-runs
+        # skip the wait.
+        time.sleep(5)
     return role["Arn"]
 
 
-def main() -> None:
+def main() -> int:
     """CLI entry point: bootstrap S3 + IAM resources."""
 
     args = parse_args()
@@ -260,7 +268,8 @@ def main() -> None:
         "instance_profile_name": args.role_name,
     }
     print(json.dumps(summary, indent=2))
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
-    sys.exit(main() or 0)
+    sys.exit(main())

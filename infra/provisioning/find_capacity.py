@@ -29,9 +29,19 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import boto3
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+# pylint: disable=wrong-import-position
+from infra.runners._runner_common import (  # noqa: E402
+    boto_client_config,
+    split_csv,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,47 +93,55 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def offered_in_region(region: str, instance_type: str) -> set[str]:
-    """Return the set of AZs that *currently* offer ``instance_type``."""
+def offered_azs_by_type(
+    ec2: Any, instance_types: list[str]
+) -> dict[str, set[str]]:
+    """Return the AZs that *currently* offer each instance type.
 
-    ec2 = boto3.client("ec2", region_name=region)
+    One paginated ``DescribeInstanceTypeOfferings`` sweep covers every
+    instance type (the filter accepts a list), instead of one call per type.
+    """
+
     paginator = ec2.get_paginator("describe_instance_type_offerings")
-    azs: set[str] = set()
+    offered: dict[str, set[str]] = {t: set() for t in instance_types}
     for page in paginator.paginate(
         LocationType="availability-zone",
-        Filters=[{"Name": "instance-type", "Values": [instance_type]}],
+        Filters=[{"Name": "instance-type", "Values": instance_types}],
     ):
         for offering in page.get("InstanceTypeOfferings", []):
-            azs.add(offering["Location"])
-    return azs
+            offered[offering["InstanceType"]].add(offering["Location"])
+    return offered
 
 
 def latest_spot_prices(
-    region: str,
-    instance_type: str,
+    ec2: Any,
+    instance_types: list[str],
     lookback_hours: int,
-) -> dict[str, dict[str, Any]]:
-    """Return the most recent spot price per AZ for ``instance_type``."""
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Return the most recent spot price per ``(instance_type, AZ)``.
 
-    ec2 = boto3.client("ec2", region_name=region)
+    One paginated ``DescribeSpotPriceHistory`` sweep covers every instance
+    type, instead of one call per type.
+    """
+
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=lookback_hours)
     paginator = ec2.get_paginator("describe_spot_price_history")
-    latest: dict[str, dict[str, Any]] = {}
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
     for page in paginator.paginate(
-        InstanceTypes=[instance_type],
+        InstanceTypes=instance_types,
         ProductDescriptions=["Linux/UNIX"],
         StartTime=start,
         EndTime=end,
     ):
         for entry in page.get("SpotPriceHistory", []):
-            az = entry["AvailabilityZone"]
+            key = (entry["InstanceType"], entry["AvailabilityZone"])
             timestamp = entry["Timestamp"]
             if (
-                az not in latest
-                or timestamp > latest[az]["timestamp"]
+                key not in latest
+                or timestamp > latest[key]["timestamp"]
             ):
-                latest[az] = {
+                latest[key] = {
                     "timestamp": timestamp,
                     "price": float(entry["SpotPrice"]),
                 }
@@ -142,31 +160,34 @@ def find_candidates(
     # Outer loop over regions then instance types preserves priority semantics
     # for ties, but we do not stop early so the caller can see fallbacks.
     for region_index, region in enumerate(regions):
+        # One client per region, reused by both describe sweeps.
+        ec2 = boto3.client(
+            "ec2", region_name=region, config=boto_client_config()
+        )
+        try:
+            offered = offered_azs_by_type(ec2, instance_types)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            print(
+                f"WARN: describe_instance_type_offerings failed in {region}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        if not any(offered.values()):
+            continue
+        try:
+            prices = latest_spot_prices(ec2, instance_types, lookback_hours)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            print(
+                f"WARN: describe_spot_price_history failed in {region}: {exc}",
+                file=sys.stderr,
+            )
+            continue
         for type_index, instance_type in enumerate(instance_types):
-            try:
-                offered_azs = offered_in_region(region, instance_type)
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                print(
-                    f"WARN: describe_instance_type_offerings failed in {region} "
-                    f"for {instance_type}: {exc}",
-                    file=sys.stderr,
-                )
-                continue
-            if not offered_azs:
-                continue
-            try:
-                prices = latest_spot_prices(region, instance_type, lookback_hours)
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                print(
-                    f"WARN: describe_spot_price_history failed in {region} "
-                    f"for {instance_type}: {exc}",
-                    file=sys.stderr,
-                )
-                continue
-            for az in offered_azs:
-                if az not in prices:
+            for az in offered[instance_type]:
+                price_entry = prices.get((instance_type, az))
+                if price_entry is None:
                     continue
-                spot_price = prices[az]["price"]
+                spot_price = price_entry["price"]
                 candidates.append(
                     {
                         "region": region,
@@ -176,7 +197,7 @@ def find_candidates(
                         "max_bid_usd_per_hour": round(
                             spot_price * max_price_multiplier, 4
                         ),
-                        "observed_at_utc": prices[az]["timestamp"].isoformat(),
+                        "observed_at_utc": price_entry["timestamp"].isoformat(),
                         "priority_region_index": region_index,
                         "priority_instance_index": type_index,
                     }
@@ -196,10 +217,8 @@ def main() -> int:
     """CLI entry point. Prints JSON of viable candidates."""
 
     args = parse_args()
-    regions = [r.strip() for r in args.regions.split(",") if r.strip()]
-    instance_types = [
-        t.strip() for t in args.instance_types.split(",") if t.strip()
-    ]
+    regions = list(split_csv(args.regions) or ())
+    instance_types = list(split_csv(args.instance_types) or ())
     candidates = find_candidates(
         regions=regions,
         instance_types=instance_types,

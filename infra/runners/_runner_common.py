@@ -20,6 +20,7 @@ import logging
 import os
 import socket
 import sys
+import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -120,6 +121,40 @@ def add_eval_artifact_args(parser: argparse.ArgumentParser) -> None:
 # ---------------------------------------------------------------------------
 
 
+def boto_client_config() -> Any:
+    """Shared botocore client config for all infra scripts.
+
+    Adaptive retries replace the per-call-site retry loops and fixed
+    sleeps that scripts previously hand-rolled; the bounded connect
+    timeout keeps a wedged endpoint from blocking a run for the default
+    60 seconds.
+    """
+
+    from botocore.config import Config  # local import keeps unit-test imports cheap
+
+    return Config(
+        retries={"mode": "adaptive", "total_max_attempts": 5},
+        connect_timeout=10,
+    )
+
+
+# Client construction re-runs the credential chain and rebuilds the
+# connection pool, so the eval runners' per-level sync loop must not pay
+# that cost on every call.
+_S3_CLIENT: Any = None
+
+
+def s3_client() -> Any:
+    """Process-wide cached S3 client used by all S3 helpers below."""
+
+    global _S3_CLIENT
+    if _S3_CLIENT is None:
+        import boto3  # local import keeps unit-test imports cheap
+
+        _S3_CLIENT = boto3.client("s3", config=boto_client_config())
+    return _S3_CLIENT
+
+
 def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
     """Split ``s3://bucket/key/path`` into ``(bucket, key)`` (key may be empty)."""
 
@@ -155,9 +190,7 @@ def s3_sync(local_dir: Path, bucket: str, key_prefix: str) -> None:
         )
         return
 
-    import boto3  # local import keeps unit-test imports cheap
-
-    client = boto3.client("s3")
+    client = s3_client()
     prefix = key_prefix.strip("/")
     uploaded = 0
     skipped = 0
@@ -187,13 +220,11 @@ def s3_sync(local_dir: Path, bucket: str, key_prefix: str) -> None:
 def s3_download_file(s3_uri: str, local_path: Path) -> None:
     """Download a single S3 object to ``local_path`` (parents created)."""
 
-    import boto3
-
     bucket, key = parse_s3_uri(s3_uri)
     if not key:
         raise ValueError(f"S3 URI must include a key: {s3_uri!r}")
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    boto3.client("s3").download_file(bucket, key, str(local_path))
+    s3_client().download_file(bucket, key, str(local_path))
 
 
 def download_calibration_artifact(
@@ -295,6 +326,85 @@ def eval_run_metadata(
             config.results_bucket, config.results_prefix
         ),
     }
+
+
+def eval_summary_payload(
+    config: Any,
+    manifest: dict[str, Any],
+    mode: str,
+    extra: dict[str, Any],
+    *,
+    ended: bool,
+    elapsed_seconds: float | None,
+) -> dict[str, Any]:
+    """``summary.json`` payload shared by the two eval runners.
+
+    The common header (identity + provenance) and tail (timing) wrap the
+    runner-specific ``extra`` section.
+    """
+
+    return {
+        "mode": mode,
+        "run_id": config.run_id,
+        "artifact_uri": config.artifact_uri,
+        "base_model_id": manifest["base_model_id"],
+        "calibration_dataset_spec": manifest["dataset_spec"],
+        "eval_dataset_spec": config.eval_dataset_spec,
+        **extra,
+        "ended_at_utc": (
+            datetime.now(timezone.utc).isoformat() if ended else None
+        ),
+        "elapsed_seconds": elapsed_seconds,
+    }
+
+
+def sync_results(config: Any) -> None:
+    """Sync an eval runner's staging dir to its S3 destination."""
+
+    s3_sync(
+        local_dir=config.output_dir,
+        bucket=config.results_bucket,
+        key_prefix=config.results_prefix,
+    )
+
+
+def run_level_sweep(
+    config: Any,
+    *,
+    model: Any,
+    stats: dict[str, Any],
+    snapshot: dict[str, Any],
+    mode_label: str,
+    per_level: Any,
+    write_summary: Any,
+) -> None:
+    """Per-level sweep scaffold shared by the two eval runners.
+
+    Each level: restore + prune, run ``per_level(level)``, persist the
+    rolling summary, and sync to S3 so a spot interruption never loses a
+    completed level. The ``finally`` block writes the final summary (with
+    elapsed time) and syncs once more.
+    """
+
+    started = time.monotonic()
+    try:
+        for level in config.eval_levels:
+            LOGGER.info("=== Pruning level %s%% ===", level_label(level))
+            prune_to_level(model, stats, snapshot, level)
+            per_level(level)
+            write_summary(ended=False, elapsed_seconds=None)
+            sync_results(config)
+    finally:
+        write_summary(
+            ended=True, elapsed_seconds=time.monotonic() - started
+        )
+        sync_results(config)
+        LOGGER.info(
+            "%s finished. Results: s3://%s/%s/",
+            mode_label,
+            config.results_bucket,
+            config.results_prefix,
+        )
 
 
 # ---------------------------------------------------------------------------

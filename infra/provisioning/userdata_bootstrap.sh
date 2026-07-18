@@ -32,6 +32,8 @@ mkdir -p "$LOG_DIR"
 exec > >(tee -a "$LOG_DIR/userdata.log") 2>&1
 
 echo "===== userdata bootstrap started at $(date -u +%FT%TZ) ====="
+# Diagnostics only: all S3 traffic uses RESULTS_BUCKET_REGION below, not
+# the instance's own region.
 echo "Instance metadata:"
 TOKEN=$(curl -sS -X PUT "http://169.254.169.254/latest/api/token" \
     -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)
@@ -57,6 +59,11 @@ RUNNER_RELPATH='__RUNNER_RELPATH__'
 WORK_DIR=/opt/pruning-metrics
 RESULTS_DIR=/opt/results
 mkdir -p "$WORK_DIR" "$RESULTS_DIR"
+
+# Let the AWS CLI retry throttled/transient failures itself instead of
+# wrapping every call in a shell loop.
+export AWS_RETRY_MODE=standard
+export AWS_MAX_ATTEMPTS=5
 
 # Sync logs at the end no matter what (spot interrupt, crash, success).
 cleanup() {
@@ -143,7 +150,10 @@ echo "Using python: $PYTHON_BIN"
 "$PYTHON_BIN" --version
 "$PYTHON_BIN" -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), 'devices', torch.cuda.device_count())"
 
-# Fetch the repository tarball from S3.
+# Fetch the repository tarball from S3. Retried by hand on top of the CLI's
+# own retries because on first boot the instance-profile credentials can lag
+# IMDS availability, and the CLI does not retry credential-resolution
+# failures.
 cd "$WORK_DIR"
 echo "Pulling repo tarball s3://${RESULTS_BUCKET}/${REPO_TARBALL_KEY}"
 for attempt in 1 2 3; do
@@ -156,10 +166,11 @@ for attempt in 1 2 3; do
 done
 tar -xzf /tmp/repo.tar.gz -C "$WORK_DIR" --strip-components=0
 
+# huggingface_hub reads these env vars directly; no explicit login() call
+# needed (which would also put the token into a process argv).
 if [ -n "$HF_TOKEN" ]; then
     export HUGGINGFACE_HUB_TOKEN="$HF_TOKEN"
     export HF_TOKEN="$HF_TOKEN"
-    "$PYTHON_BIN" -c "from huggingface_hub import login; login('$HF_TOKEN', add_to_git_credential=False)" || true
 fi
 
 # Disable the hf_xet Xet-CDN protocol. Unauthenticated Xet transfers are

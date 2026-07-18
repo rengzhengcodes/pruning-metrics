@@ -18,15 +18,12 @@ import argparse
 import json
 import random
 import sys
-import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # pylint: disable=wrong-import-position
 from infra.runners._runner_common import (  # noqa: E402
@@ -35,17 +32,21 @@ from infra.runners._runner_common import (  # noqa: E402
     add_eval_artifact_args,
     configure_logging,
     download_calibration_artifact,
+    ensure_src_on_path,
     env_or,
     eval_run_metadata,
+    eval_summary_payload,
     level_label,
     load_model_stats_snapshot,
-    prune_to_level,
     resolve_eval_defaults,
-    s3_sync,
+    run_level_sweep,
     serialise_config,
     split_csv,
     write_json,
 )
+
+ensure_src_on_path()
+
 from pruning_metrics.evals.coding.teacher_forcing import (  # noqa: E402
     compute_teacher_forced_logprobs,
     write_teacher_forced_record,
@@ -193,92 +194,74 @@ def main() -> int:
     sample_summaries: dict[str, list[dict[str, Any]]] = {
         record.task_id: [] for record in sampled_records
     }
-    started = time.monotonic()
 
-    try:
-        for level in config.eval_levels:
-            LOGGER.info("=== Pruning level %s%% ===", level_label(level))
-            prune_to_level(model, stats, snapshot, level)
-
-            for sample_idx, record in enumerate(sampled_records):
-                if not record.target_text:
-                    LOGGER.warning(
-                        "Skipping %s at level %s: empty target_text.",
-                        record.task_id,
-                        level_label(level),
-                    )
-                    continue
-                try:
-                    tf_record = compute_teacher_forced_logprobs(
-                        model=model,
-                        tokenizer=tokenizer,
-                        prompt=record.prompt,
-                        answer=record.target_text,
-                        model_id=f"{manifest['base_model_id']}@prune={level}",
-                        task_id=record.task_id,
-                        seed=config.tf_seed,
-                        top_k=config.top_k,
-                    )
-                except ValueError as exc:
-                    LOGGER.warning(
-                        "Skipping sample %d task=%s at level=%s — tokenisation error: %s",
-                        sample_idx,
-                        record.task_id,
-                        level_label(level),
-                        exc,
-                    )
-                    continue
-                level_dir = (
-                    config.output_dir
-                    / f"level={level_label(level)}"
-                    / f"sample={sample_idx:03d}_task={_safe_filename(record.task_id)}"
-                )
-                level_dir.mkdir(parents=True, exist_ok=True)
-                write_teacher_forced_record(tf_record, level_dir / "per_token.json")
-
-                LOGGER.info(
-                    "level=%s sample=%s task=%s avg_logp=%.4f ppl=%.4f over %d tokens",
+    def _per_level(level: float) -> None:
+        for sample_idx, record in enumerate(sampled_records):
+            if not record.target_text:
+                LOGGER.warning(
+                    "Skipping %s at level %s: empty target_text.",
+                    record.task_id,
                     level_label(level),
+                )
+                continue
+            try:
+                tf_record = compute_teacher_forced_logprobs(
+                    model=model,
+                    tokenizer=tokenizer,
+                    prompt=record.prompt,
+                    answer=record.target_text,
+                    model_id=f"{manifest['base_model_id']}@prune={level}",
+                    task_id=record.task_id,
+                    seed=config.tf_seed,
+                    top_k=config.top_k,
+                )
+            except ValueError as exc:
+                LOGGER.warning(
+                    "Skipping sample %d task=%s at level=%s — tokenisation error: %s",
                     sample_idx,
                     record.task_id,
-                    tf_record.average_logprob,
-                    tf_record.perplexity,
-                    tf_record.num_answer_tokens,
+                    level_label(level),
+                    exc,
                 )
-                sample_summaries[record.task_id].append(
-                    {
-                        "pruning_level": level,
-                        "average_logprob": tf_record.average_logprob,
-                        "perplexity": tf_record.perplexity,
-                        "num_answer_tokens": tf_record.num_answer_tokens,
-                        "per_token_path": str(level_dir / "per_token.json"),
-                    }
-                )
-
-            _write_summary(config, sample_summaries, manifest)
-            s3_sync(
-                local_dir=config.output_dir,
-                bucket=config.results_bucket,
-                key_prefix=config.results_prefix,
+                continue
+            level_dir = (
+                config.output_dir
+                / f"level={level_label(level)}"
+                / f"sample={sample_idx:03d}_task={_safe_filename(record.task_id)}"
             )
-    finally:
-        _write_summary(
-            config,
-            sample_summaries,
-            manifest,
-            elapsed_seconds=time.monotonic() - started,
-            ended=True,
-        )
-        s3_sync(
-            local_dir=config.output_dir,
-            bucket=config.results_bucket,
-            key_prefix=config.results_prefix,
-        )
-        LOGGER.info(
-            "Teacher-forced run finished. Results: s3://%s/%s/",
-            config.results_bucket,
-            config.results_prefix,
-        )
+            level_dir.mkdir(parents=True, exist_ok=True)
+            write_teacher_forced_record(tf_record, level_dir / "per_token.json")
+
+            LOGGER.info(
+                "level=%s sample=%s task=%s avg_logp=%.4f ppl=%.4f over %d tokens",
+                level_label(level),
+                sample_idx,
+                record.task_id,
+                tf_record.average_logprob,
+                tf_record.perplexity,
+                tf_record.num_answer_tokens,
+            )
+            sample_summaries[record.task_id].append(
+                {
+                    "pruning_level": level,
+                    "average_logprob": tf_record.average_logprob,
+                    "perplexity": tf_record.perplexity,
+                    "num_answer_tokens": tf_record.num_answer_tokens,
+                    "per_token_path": str(level_dir / "per_token.json"),
+                }
+            )
+
+    run_level_sweep(
+        config,
+        model=model,
+        stats=stats,
+        snapshot=snapshot,
+        mode_label="Teacher-forced run",
+        per_level=_per_level,
+        write_summary=lambda **kw: _write_summary(
+            config, sample_summaries, manifest, **kw
+        ),
+    )
 
     return 0
 
@@ -383,27 +366,24 @@ def _write_summary(
     elapsed_seconds: float | None = None,
     ended: bool = False,
 ) -> None:
-    payload = {
-        "mode": "teacher_forced",
-        "run_id": config.run_id,
-        "artifact_uri": config.artifact_uri,
-        "base_model_id": manifest["base_model_id"],
-        "calibration_dataset_spec": manifest["dataset_spec"],
-        "eval_dataset_spec": config.eval_dataset_spec,
-        "tf_seed": config.tf_seed,
-        "num_tf_samples": config.num_tf_samples,
-        "samples": {
-            task_id: {
-                "completed_levels": [s["pruning_level"] for s in entries],
-                "by_level": entries,
-            }
-            for task_id, entries in sample_summaries.items()
+    payload = eval_summary_payload(
+        config,
+        manifest,
+        "teacher_forced",
+        {
+            "tf_seed": config.tf_seed,
+            "num_tf_samples": config.num_tf_samples,
+            "samples": {
+                task_id: {
+                    "completed_levels": [s["pruning_level"] for s in entries],
+                    "by_level": entries,
+                }
+                for task_id, entries in sample_summaries.items()
+            },
         },
-        "ended_at_utc": (
-            datetime.now(timezone.utc).isoformat() if ended else None
-        ),
-        "elapsed_seconds": elapsed_seconds,
-    }
+        ended=ended,
+        elapsed_seconds=elapsed_seconds,
+    )
     write_json(config.output_dir / "summary.json", payload)
 
 

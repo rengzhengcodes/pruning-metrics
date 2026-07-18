@@ -38,7 +38,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 # pylint: disable=wrong-import-position
-from infra.runners._runner_common import default_run_id  # noqa: E402
+from infra.runners._runner_common import (  # noqa: E402
+    boto_client_config,
+    default_run_id,
+)
 
 USERDATA_TEMPLATE = Path(__file__).with_name("userdata_bootstrap.sh")
 
@@ -185,13 +188,17 @@ def build_repo_tarball(repo_root: Path) -> bytes:
 def upload_tarball(
     s3_client: Any, bucket: str, key: str, payload: bytes
 ) -> None:
-    """Upload the tarball to S3."""
+    """Upload the tarball to S3 via the managed transfer API.
 
-    s3_client.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=payload,
-        ContentType="application/gzip",
+    ``upload_fileobj`` handles multipart parallelism and per-part retries,
+    unlike a single-shot ``put_object`` of the whole buffer.
+    """
+
+    s3_client.upload_fileobj(
+        io.BytesIO(payload),
+        bucket,
+        key,
+        ExtraArgs={"ContentType": "application/gzip"},
     )
 
 
@@ -336,7 +343,10 @@ def main() -> int:
     tarball = build_repo_tarball(REPO_ROOT)
     print(f"Tarball size: {len(tarball)/1024/1024:.1f} MiB", file=sys.stderr)
 
-    s3 = boto3.client("s3", region_name=args.region)
+    # One session + shared retry config for all three clients.
+    session = boto3.Session(region_name=args.region)
+    client_config = boto_client_config()
+    s3 = session.client("s3", config=client_config)
     print(
         f"Uploading tarball to s3://{args.results_bucket}/{repo_tarball_key}",
         file=sys.stderr,
@@ -349,7 +359,7 @@ def main() -> int:
         file=sys.stderr,
     )
 
-    ssm = boto3.client("ssm", region_name=args.region)
+    ssm = session.client("ssm", config=client_config)
     ami_id = resolve_dlami(ssm)
     print(f"DLAMI ID in {args.region}: {ami_id}", file=sys.stderr)
 
@@ -393,7 +403,7 @@ def main() -> int:
         )
         return 0
 
-    ec2 = boto3.client("ec2", region_name=args.region)
+    ec2 = session.client("ec2", config=client_config)
     print("Calling RunInstances ...", file=sys.stderr)
     try:
         response = ec2.run_instances(
