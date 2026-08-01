@@ -12,12 +12,19 @@ For teacher forcing, ``target_text`` is the body of the correct choice (not
 its letter). This makes the TF score a meaningful signal of how confidently
 the model emits the *content* of the right answer rather than whether it
 emits the right letter.
+
+:class:`MathQaTaskAdapter` reuses the same machinery for MathQA
+(``allenai/math_qa``), which is a math word problem posed as a five-way
+multiple-choice question. Its schema differs (the choices arrive as a single
+string like ``"a ) 38 , b ) 27.675 , ..."`` and the gold field is a bare
+letter), so the adapter only overrides record loading; verification, the
+seeded split, and the letter-matching prompt are inherited.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from datasets import load_dataset
 
@@ -169,6 +176,141 @@ class MCQTaskAdapter(TaskAdapter):
             status="fail",
             detail=f"predicted={predicted} gold={gold}",
         )
+
+
+# A marker only counts at the start of the string or after an option
+# separator (comma, quote, bracket) -- a bare "b )" inside an option body
+# such as "( x + b )" must not start a new option.
+_MATHQA_MARKER = re.compile(r"(?:^|[\[,'\"])\s*([a-eA-E])\s*\)")
+_MATHQA_STRIP = re.compile(r"^[\s\[\]',\"]+|[\s\[\]',\"]+$")
+# Some MathQA rows double the letter marker, e.g. "a ) a ) 56 , b ) b ) 35".
+# Collapse an immediately-repeated same-letter marker so the option body
+# ("56") is recovered instead of parsing as empty.
+_MATHQA_DOUBLED = re.compile(r"([a-eA-E])\s*\)\s*\1\s*\)")
+
+
+class MathQaTaskAdapter(MCQTaskAdapter):
+    """MathQA (``allenai/math_qa``) as a five-way multiple-choice task.
+
+    MathQA ships ``train`` / ``validation`` / ``test`` splits. The original
+    Hub dataset is a loading *script*, unsupported by ``datasets>=3``; the
+    auto-converted parquet export (``revision="refs/convert/parquet"``) holds
+    the same records and is what this adapter reads by default.
+
+    Each row exposes ``Problem`` (question text), ``options`` (a single string
+    ``"a ) 38 , b ) 27.675 , ..."`` -- occasionally bracket/quote wrapped as
+    ``"['a ) 8', 'b ) 16', ...]"``), and ``correct`` (a lowercase letter). The
+    options string is parsed into ``(LETTER, text)`` pairs so the record looks
+    exactly like an ARC row: uppercase letter labels, the correct choice's
+    body as ``target_text``, and the gold letter in ``metadata["answer_key"]``.
+    Verification, prompting, and the seeded split are inherited from
+    :class:`MCQTaskAdapter`.
+
+    Parameters
+    ----------
+    dataset_name:
+        Hugging Face dataset name. Default ``allenai/math_qa``.
+    train_split:
+        Native calibration split name. Default ``"train"`` (29837 rows).
+    test_split:
+        Native evaluation split name. Default ``"test"`` (2985 rows).
+    revision:
+        Hub revision to load. Default ``"refs/convert/parquet"`` (the
+        script-free parquet mirror).
+    """
+
+    name = "mcq"
+
+    def __init__(
+        self,
+        dataset_name: str = "allenai/math_qa",
+        train_split: str | None = "train",
+        test_split: str = "test",
+        revision: str = "refs/convert/parquet",
+    ) -> None:
+        self.dataset_name = dataset_name
+        self.config = None
+        self.train_split = train_split
+        self.test_split = test_split
+        self.revision = revision
+        split_label = (
+            f"{train_split}+{test_split}" if train_split else test_split
+        )
+        self.dataset_spec = f"mathqa:{dataset_name}:{split_label}"
+        self._train_records: list[TaskRecord] | None = None
+        self._test_records: list[TaskRecord] | None = None
+
+    def _load_split(self, split: str) -> list[TaskRecord]:
+        """Materialise MathQA rows from a single parquet split."""
+
+        rows = load_dataset(self.dataset_name, split=split, revision=self.revision)
+        records: list[TaskRecord] = []
+        for index, row in enumerate(rows):
+            record = self._row_to_record(row, split, index)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def _row_to_record(
+        self,
+        row: Mapping[str, object],
+        split: str,
+        index: int,
+    ) -> TaskRecord | None:
+        question = str(row["Problem"]).strip()
+        pairs = _parse_mathqa_options(row["options"])
+        labels = [label for label, _ in pairs]
+        texts = [text for _, text in pairs]
+        answer_key = str(row["correct"]).strip().upper()
+        if answer_key not in labels or len(pairs) < 2:
+            # Defensive: skip rows whose gold letter has no parsed option.
+            return None
+        target_text = texts[labels.index(answer_key)]
+        if not target_text:
+            # The correct option must have non-empty body for teacher forcing.
+            return None
+        prompt = _format_mcq_prompt(question, labels, texts)
+        return TaskRecord(
+            task_id=f"mathqa/{split}/{index:05d}",
+            prompt=prompt,
+            target_text=target_text,
+            metadata={
+                "answer_key": answer_key,
+                "choice_labels": labels,
+                "choice_texts": texts,
+                "question": question,
+            },
+        )
+
+
+def _parse_mathqa_options(raw: object) -> list[tuple[str, str]]:
+    """Parse a MathQA ``options`` value into ``(LETTER, text)`` pairs.
+
+    Handles both the plain ``"a ) 38 , b ) 27.675 , ..."`` form and the
+    bracket/quote-wrapped ``"['a ) 8', 'b ) 16', ...]"`` form by locating the
+    ``LETTER )`` markers and slicing the text between consecutive markers,
+    stripping surrounding whitespace, brackets, quotes, and separators. The
+    option body may itself contain commas (``"rs . 400"``), so a naive split
+    on commas is avoided.
+    """
+
+    text = raw if isinstance(raw, str) else " , ".join(str(item) for item in raw)
+    previous = None
+    while previous != text:
+        previous = text
+        text = _MATHQA_DOUBLED.sub(r"\1 )", text)
+    markers = list(_MATHQA_MARKER.finditer(text))
+    pairs: list[tuple[str, str]] = []
+    for position, marker in enumerate(markers):
+        start = marker.end()
+        end = (
+            markers[position + 1].start()
+            if position + 1 < len(markers)
+            else len(text)
+        )
+        body = _MATHQA_STRIP.sub("", text[start:end])
+        pairs.append((marker.group(1).upper(), body))
+    return pairs
 
 
 def _format_mcq_prompt(

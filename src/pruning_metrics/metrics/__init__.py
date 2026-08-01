@@ -34,6 +34,13 @@ Usage
 
 from __future__ import annotations
 
+from pruning_metrics.metrics.cluster_stats import (
+    ari_vs_labels,
+    label_permutation_pvalue,
+    mantel,
+    partial_mantel,
+    silhouette_by_label,
+)
 from pruning_metrics.metrics.distributions import (
     TokenStepDict,
     TopAlternativeDict,
@@ -41,6 +48,15 @@ from pruning_metrics.metrics.distributions import (
     compute_emd,
     compute_jsd,
     compute_kld,
+)
+from pruning_metrics.metrics.masks import (
+    extract_pruning_masks,
+    jaccard_distance,
+    load_digest,
+    load_packed_masks,
+    make_mask_digest,
+    save_digest,
+    save_packed_masks,
 )
 
 __all__ = [
@@ -50,4 +66,16 @@ __all__ = [
     "compute_chamfer",
     "TopAlternativeDict",
     "TokenStepDict",
+    "extract_pruning_masks",
+    "save_packed_masks",
+    "load_packed_masks",
+    "make_mask_digest",
+    "save_digest",
+    "load_digest",
+    "jaccard_distance",
+    "mantel",
+    "partial_mantel",
+    "silhouette_by_label",
+    "ari_vs_labels",
+    "label_permutation_pvalue",
 ]

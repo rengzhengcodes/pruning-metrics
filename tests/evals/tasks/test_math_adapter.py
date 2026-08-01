@@ -106,7 +106,7 @@ def test_math_adapter_uses_native_splits_in_dataset_order(monkeypatch) -> None:
     assert [r.task_id for r in test] == [
         f"gsm8k/test/{i:05d}" for i in range(len(test_rows))
     ]
-    assert adapter.dataset_spec == "math:gsm8k:main:train+test"
+    assert adapter.dataset_spec == "math:openai/gsm8k:main:train+test"
 
 
 def test_math_adapter_falls_back_to_seeded_split_when_train_split_is_none(

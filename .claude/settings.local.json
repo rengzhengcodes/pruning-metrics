@@ -30,7 +30,9 @@
       "Bash(python3.12 -m pip install --user matplotlib scikit-learn)",
       "Bash(python3.12 -m venv /tmp/verify_venv)",
       "Bash(/tmp/verify_venv/bin/pip install *)",
-      "Bash(/tmp/verify_venv/bin/python *)"
+      "Bash(/tmp/verify_venv/bin/python *)",
+      "Bash(python3 -c ' *)",
+      "Bash(xargs ls)"
     ]
   }
 }

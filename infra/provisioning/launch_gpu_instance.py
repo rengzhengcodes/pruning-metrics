@@ -58,6 +58,7 @@ TAR_EXCLUDES = {
     ".mypy_cache",
     ".ruff_cache",
     "artifacts",
+    "results",
     "node_modules",
     "build",
     "dist",
@@ -78,9 +79,11 @@ DLAMI_PARAMETERS_PRIORITY = (
 
 # Path of each runner relative to the repo root.
 RUNNER_RELPATHS: dict[str, str] = {
+    "v2_analysis": "infra/runners/run_v2_analysis.py",
     "pruning_calibration": "infra/runners/run_pruning_calibration.py",
     "freeform_eval": "infra/runners/run_freeform_eval.py",
     "teacher_forced": "infra/runners/run_teacher_forced.py",
+    "prune_eval_sweep": "infra/runners/run_prune_eval_sweep.py",
 }
 
 
@@ -157,6 +160,12 @@ def parse_args() -> argparse.Namespace:
         help="Run id (default: UTC timestamp + random suffix).",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--on-demand",
+        action="store_true",
+        help="Launch on-demand instead of spot (short jobs where an "
+        "interruption costs more than the on-demand premium).",
+    )
     parser.add_argument("--no-shutdown-on-exit", action="store_true")
     parser.add_argument("--name-tag", default="pruning-metrics-runner")
     return parser.parse_args()
@@ -188,17 +197,20 @@ def build_repo_tarball(repo_root: Path) -> bytes:
 def upload_tarball(
     s3_client: Any, bucket: str, key: str, payload: bytes
 ) -> None:
-    """Upload the tarball to S3 via the managed transfer API.
+    """Upload the tarball to S3 with a single thread-free ``put_object``.
 
-    ``upload_fileobj`` handles multipart parallelism and per-part retries,
-    unlike a single-shot ``put_object`` of the whole buffer.
+    The tarball is a few MiB, so multipart parallelism buys nothing — and
+    ``upload_fileobj``'s TransferManager spawns a thread pool, which fails
+    outright on hosts near their pid/thread limit. ``put_object`` performs
+    the whole upload on the calling thread; botocore's standard retry mode
+    still covers transient request failures.
     """
 
-    s3_client.upload_fileobj(
-        io.BytesIO(payload),
-        bucket,
-        key,
-        ExtraArgs={"ContentType": "application/gzip"},
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=payload,
+        ContentType="application/gzip",
     )
 
 
@@ -404,9 +416,24 @@ def main() -> int:
         return 0
 
     ec2 = session.client("ec2", config=client_config)
+    market_kwargs = (
+        {}
+        if args.on_demand
+        else {
+            "InstanceMarketOptions": {
+                "MarketType": "spot",
+                "SpotOptions": {
+                    "MaxPrice": f"{args.max_spot_price:.4f}",
+                    "SpotInstanceType": "one-time",
+                    "InstanceInterruptionBehavior": "terminate",
+                },
+            }
+        }
+    )
     print("Calling RunInstances ...", file=sys.stderr)
     try:
         response = ec2.run_instances(
+            **market_kwargs,
             ImageId=ami_id,
             InstanceType=args.instance_type,
             MinCount=1,
@@ -425,14 +452,6 @@ def main() -> int:
                     },
                 }
             ],
-            InstanceMarketOptions={
-                "MarketType": "spot",
-                "SpotOptions": {
-                    "MaxPrice": f"{args.max_spot_price:.4f}",
-                    "SpotInstanceType": "one-time",
-                    "InstanceInterruptionBehavior": "terminate",
-                },
-            },
             InstanceInitiatedShutdownBehavior="terminate",
             UserData=encoded_userdata,
             TagSpecifications=[

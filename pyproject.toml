@@ -21,6 +21,11 @@ dev = [
   "pytest>=8.0.0",
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "network: test downloads Hugging Face datasets (deselect with -m 'not network')",
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

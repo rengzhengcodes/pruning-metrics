@@ -70,7 +70,7 @@ class MathTaskAdapter(TaskAdapter):
 
     def __init__(
         self,
-        dataset_name: str = "gsm8k",
+        dataset_name: str = "openai/gsm8k",
         config: str = "main",
         train_split: str | None = "train",
         test_split: str = "test",
