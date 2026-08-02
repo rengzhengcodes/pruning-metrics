@@ -25,10 +25,11 @@ artifact to S3.
   and ARC-Challenge (regex letter MCQ). Adding a new task is one file +
   one registry entry; see [`docs/tasks.md`](docs/tasks.md).
 
-* **EC2 spot GPU runners** under [`infra/ec2/`](infra/ec2/): a tarball
-  launcher, a runner-agnostic user-data bootstrap, three narrow runner
-  scripts, and shared WANDA / S3 helpers. Each runner runs unattended on
-  an EC2 box and self-terminates when finished.
+* **EC2 spot GPU runners** under [`infra/`](infra/): a tarball launcher
+  and user-data bootstrap in [`infra/provisioning/`](infra/provisioning/),
+  narrow runner scripts and shared WANDA / SparseGPT / S3 helpers in
+  [`infra/runners/`](infra/runners/). Each runner runs unattended on an
+  EC2 box and self-terminates when finished.
 
 ## Documentation entry points
 
@@ -37,8 +38,50 @@ artifact to S3.
 * **[`docs/architecture.md`](docs/architecture.md)** -- system overview
   with diagrams, repo layout, determinism contract, cost reference.
 * **[`docs/tasks.md`](docs/tasks.md)** -- how to add a new task type.
-* **[`infra/ec2/README.md`](infra/ec2/README.md)** -- operator runbook
+* **[`docs/methodology_review.md`](docs/methodology_review.md)** --
+  adversarial review of the methodology, plus the v2 experiment (§6)
+  that empirically tested it.
+* **[`infra/README.md`](infra/README.md)** -- operator runbook
   (capacity probes, SSM Session Manager, spot interruption recovery).
+
+## Key finding: behavioral distances are diagnostic of parameter-level structure
+
+An adversarial review
+([`docs/methodology_review.md`](docs/methodology_review.md)) initially
+judged the v1 pipeline (13 WANDA-pruned Qwen2-72B variants, visual t-SNE
+clustering) unable to support any internal-structure claim. The v2
+experiment (2 pruners x 5 calibration domains x 3 seeds x 8 sparsity
+levels on Qwen2-7B, 232 variants) reversed the review's central finding:
+teacher-forced output-distribution distances track pruning-mask Jaccard
+overlap at r = +0.75 to +0.83 at matched sparsity (all 20 benchmark x
+metric combos at the permutation floor), and WANDA variants cluster by
+calibration domain with ARI up to 1.0 within (pruner, level) strata.
+
+Four changes produced the positive finding, in order of contribution:
+
+1. **Parameter-level ground truth.** v2 saved every variant's pruning
+   mask (1/32 digests) and computed pairwise mask-Jaccard distances --
+   giving the behavioral matrices something measurable to be diagnostic
+   *of*. v1 had no ground truth, so the question was untestable.
+2. **Seed replicates and more domains.** 5 domains x 3 seeds yields 15
+   points per (pruner, level) stratum -- enough for silhouette / ARI /
+   permutation tests to have power. v1's ~4 points per domain was below
+   any cluster-test floor.
+3. **Stratifying by sparsity level (analysis, not design).** The
+   sparsity pair explains ~94-97% of both distance matrices, so every
+   pooled statistic is uninterpretable -- the pre-registered pooled
+   analysis printed "MIXED". Holding (pruner, level) fixed revealed both
+   signals. The finer 8-level sweep is what made stratification viable.
+4. **Quantitative statistics replacing visual embeddings.** Mantel /
+   restricted-permutation / ARI machinery instead of eyeballing t-SNE --
+   necessary but not sufficient (the first pass used a suppressor
+   control until adversarial verification corrected it).
+
+Notably, the change motivated by the literature -- adding SparseGPT as
+the "more calibration-sensitive" pruner -- did **not** contribute:
+WANDA's masks turned out to be ~4x more domain-differentiated, and
+SparseGPT is the weak, boundary-condition case. Full corrected analysis,
+tables, and caveats: [`docs/methodology_review.md`](docs/methodology_review.md) §6.
 
 ## Quickstart
 
