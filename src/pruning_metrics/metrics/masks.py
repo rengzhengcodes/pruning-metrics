@@ -19,6 +19,12 @@ which asks the same question at the *behavioral* level). The pipeline is:
 4. :func:`jaccard_distance` -- 1 minus Jaccard similarity over retained
    positions; works identically on full masks and digests since both are just
    ``{name: bool_array}`` dicts.
+5. :func:`load_digest_packed` / :func:`jaccard_distance_packed` /
+   :func:`jaccard_matrix_packed` -- the same distance computed without ever
+   unpacking to ``bool``. :func:`load_digest` costs 8 bits of memory per
+   1-bit-of-information position, which is fine for a handful of digests and
+   ruinous for a pairwise matrix over hundreds of variants; the packed path
+   keeps the on-disk packing and counts bits with ``np.bitwise_count``.
 
 Notes
 -----
@@ -35,8 +41,9 @@ from __future__ import annotations
 
 import math
 import zlib
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -329,6 +336,186 @@ def load_digest(path: str | Path) -> dict[str, np.ndarray]:
 # ---------------------------------------------------------------------------
 # Mask-space distance
 # ---------------------------------------------------------------------------
+
+
+class PackedDigest(NamedTuple):
+    """A digest kept in its on-disk bit-packed form (1 bit per position).
+
+    :func:`load_digest` unpacks to ``bool`` arrays, costing 8x the memory of
+    the ``.npz`` it came from (~204 MB per 7B-model digest). Holding a few
+    hundred variants at once to build a pairwise matrix is therefore
+    infeasible; this representation keeps the 1-bit-per-position packing all
+    the way through the Jaccard computation.
+
+    Attributes
+    ----------
+    bits:
+        All layers' ``np.packbits`` output concatenated in sorted-layer-name
+        order, zero-padded so the buffer is a whole number of ``uint64``
+        words. Each layer starts on a byte boundary, exactly as
+        :func:`save_digest` wrote it.
+    layout:
+        ``(layer_name, bit_length)`` pairs in the same order, used to reject
+        comparisons between digests of different models.
+    """
+
+    bits: np.ndarray
+    layout: tuple[tuple[str, int], ...]
+
+
+def load_digest_packed(path: str | Path) -> PackedDigest:
+    """Load a digest written by :func:`save_digest` without unpacking it.
+
+    Memory-efficient counterpart to :func:`load_digest`: the returned object
+    is ~8x smaller because positions stay bit-packed. Use it with
+    :func:`jaccard_distance_packed`, which computes the identical distance.
+
+    Parameters
+    ----------
+    path:
+        Path to a ``.npz`` file written by :func:`save_digest`.
+
+    Returns
+    -------
+    PackedDigest
+        Concatenated packed bits plus the layer layout they encode.
+
+    Notes
+    -----
+    ``np.packbits`` pads each layer up to a byte boundary with zero bits, and
+    this function pads the concatenated buffer up to a ``uint64`` boundary the
+    same way. Padding bits are ``False`` ("not retained") in *every* digest, so
+    they contribute nothing to either the intersection or the union count and
+    the resulting Jaccard distance is unaffected.
+    """
+    chunks: list[np.ndarray] = []
+    layout: list[tuple[str, int]] = []
+    with np.load(path) as data:
+        names = sorted(
+            key[: -len(_BITS_SUFFIX)]
+            for key in data.files
+            if key.endswith(_BITS_SUFFIX)
+        )
+        for name in names:
+            chunks.append(np.asarray(data[f"{name}{_BITS_SUFFIX}"], dtype=np.uint8))
+            layout.append((name, int(data[f"{name}{_N_SUFFIX}"])))
+
+    bits = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.uint8)
+    remainder = bits.size % 8
+    if remainder:
+        bits = np.concatenate([bits, np.zeros(8 - remainder, dtype=np.uint8)])
+    return PackedDigest(bits=bits, layout=tuple(layout))
+
+
+def jaccard_distance_packed(a: PackedDigest, b: PackedDigest) -> float:
+    """Jaccard distance between two :class:`PackedDigest` objects.
+
+    Numerically identical to :func:`jaccard_distance` on the same digests, but
+    counts retained positions with ``np.bitwise_count`` over ``uint64`` words
+    instead of materialising ``bool`` arrays, so it is both smaller in memory
+    and faster.
+
+    Parameters
+    ----------
+    a, b:
+        Digests loaded via :func:`load_digest_packed`.
+
+    Returns
+    -------
+    float
+        ``1 - |A ∩ B| / |A ∪ B|``; ``0.0`` by convention when the union is
+        empty, matching :func:`jaccard_distance`.
+
+    Raises
+    ------
+    ValueError
+        If the two digests do not describe the same layers with the same
+        lengths, which would make their bit positions non-comparable.
+    """
+    if a.layout != b.layout:
+        names_a = {name for name, _ in a.layout}
+        names_b = {name for name, _ in b.layout}
+        if names_a != names_b:
+            raise ValueError(
+                "mask/digest key sets differ: "
+                f"only in a={sorted(names_a - names_b)}, "
+                f"only in b={sorted(names_b - names_a)}"
+            )
+        lengths_a = dict(a.layout)
+        mismatched = [
+            (name, lengths_a[name], n) for name, n in b.layout if lengths_a[name] != n
+        ]
+        name, len_a, len_b = mismatched[0]
+        raise ValueError(f"length mismatch for layer {name!r}: {len_a} vs {len_b}")
+
+    words_a = a.bits.view(np.uint64)
+    words_b = b.bits.view(np.uint64)
+    intersection = int(np.bitwise_count(words_a & words_b).sum(dtype=np.int64))
+    union = int(np.bitwise_count(words_a | words_b).sum(dtype=np.int64))
+    if union == 0:
+        # Neither digest retains anything anywhere; define distance as 0
+        # (vacuously identical) rather than dividing by zero.
+        return 0.0
+    return 1.0 - (intersection / union)
+
+
+def jaccard_matrix_packed(
+    paths: Sequence[str | Path],
+    *,
+    tile: int = 48,
+) -> np.ndarray:
+    """Full pairwise Jaccard-distance matrix over digests on disk.
+
+    Loads digests in tiles rather than all at once, so peak memory is set by
+    ``tile`` instead of by the number of variants. With the v2 experiment's
+    232 variants (~25 MB packed each), the default holds ~2.5 GB resident
+    instead of the ~5.9 GB an all-at-once packed load would need -- or the
+    ~47 GB an all-at-once *unpacked* load would need.
+
+    Parameters
+    ----------
+    paths:
+        Digest ``.npz`` paths, one per variant. The returned matrix is indexed
+        in this order.
+    tile:
+        Number of digests held resident per block. Two blocks are live at a
+        time, so peak usage is roughly ``2 * tile * digest_size``.
+
+    Returns
+    -------
+    np.ndarray
+        Symmetric ``(n, n)`` float64 matrix with a zero diagonal, where
+        ``n = len(paths)``.
+
+    Raises
+    ------
+    ValueError
+        If ``tile`` is not positive, or if any two digests describe different
+        layers (propagated from :func:`jaccard_distance_packed`).
+    """
+    if tile < 1:
+        raise ValueError(f"tile must be >= 1, got {tile}")
+
+    n = len(paths)
+    out = np.zeros((n, n), dtype=np.float64)
+    blocks = [(start, min(start + tile, n)) for start in range(0, n, tile)]
+
+    for bi, (i0, i1) in enumerate(blocks):
+        block_i = [load_digest_packed(p) for p in paths[i0:i1]]
+        for j0, j1 in blocks[bi:]:
+            # The diagonal block compares against itself; reuse it rather
+            # than paying a second load of the same files.
+            block_j = (
+                block_i if j0 == i0 else [load_digest_packed(p) for p in paths[j0:j1]]
+            )
+            for i in range(i0, i1):
+                # Upper triangle only; start past the diagonal within a block.
+                for j in range(max(j0, i + 1), j1):
+                    d = jaccard_distance_packed(block_i[i - i0], block_j[j - j0])
+                    out[i, j] = out[j, i] = d
+            del block_j
+        del block_i
+    return out
 
 
 def jaccard_distance(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> float:

@@ -48,6 +48,9 @@ ANALYSIS_DEPS = [
     "scipy",
     "pandas",
     "matplotlib",
+    # Section 7 embeds with all five reducers; UMAP is the only one not in
+    # scikit-learn, and without it that whole section raises ImportError.
+    "umap-learn",
 ]
 
 
@@ -63,6 +66,15 @@ def parse_args() -> argparse.Namespace:
         "--permutations",
         default=env_or("V2_PERMUTATIONS", default="4999"),
     )
+    parser.add_argument(
+        "--benches",
+        default=env_or("V2_BENCHES", default=""),
+        help=(
+            "Comma-separated benchmark substrings to analyse (default: all). "
+            "Scopes both the S3 cache sync and the notebook itself, which "
+            "matters because one benchmark's matrices can cost 20x another's."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -74,8 +86,30 @@ def _pip_install() -> None:
     )
 
 
-def _sync_cache(bucket: str, data_prefix: str, cache_dir: Path) -> int:
-    """Concurrent pull of analysis inputs from S3 into the notebook cache."""
+def _sync_cache(
+    bucket: str, data_prefix: str, cache_dir: Path, benches: list[str] | None = None
+) -> int:
+    """Concurrent pull of analysis inputs from S3 into the notebook cache.
+
+    Parameters
+    ----------
+    bucket, data_prefix:
+        Source location of the prune/eval runs.
+    cache_dir:
+        Local ``results/v2_cache`` directory to mirror into.
+    benches:
+        Optional benchmark substrings. When given, only ``per_token.json``
+        under a matching ``bench=`` path component is fetched -- the whole set
+        is ~163 k objects / 15 GB, and a single-benchmark analysis needs a
+        fraction of it. Mask digests and summaries are always fetched: they are
+        small and are not benchmark-scoped.
+
+    Returns
+    -------
+    int
+        Number of objects actually downloaded (already-present files are
+        skipped, so a resumed run fetches nothing).
+    """
 
     import boto3
 
@@ -85,10 +119,11 @@ def _sync_cache(bucket: str, data_prefix: str, cache_dir: Path) -> int:
     for page in paginator.paginate(Bucket=bucket, Prefix=f"{data_prefix}/"):
         for obj in page.get("Contents") or []:
             key = obj["Key"]
-            if key.endswith(
-                ("per_token.json", ".digest.npz", "summary.json", "manifest.json")
-            ):
+            if key.endswith((".digest.npz", "summary.json", "manifest.json")):
                 keys.append(key)
+            elif key.endswith("per_token.json"):
+                if not benches or any(f"bench={b}" in key or b in key for b in benches):
+                    keys.append(key)
     LOGGER.info("Cache sync: %d objects to fetch", len(keys))
 
     def _fetch(key: str) -> bool:
@@ -133,12 +168,22 @@ def main() -> int:
     cache_dir = nb_dir / "results" / "v2_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    benches = [b.strip() for b in str(args.benches).split(",") if b.strip()]
+
     _pip_install()
-    _sync_cache(args.results_bucket, args.data_prefix, cache_dir)
+    _sync_cache(args.results_bucket, args.data_prefix, cache_dir, benches)
 
     env = dict(os.environ)
     env["V2_PERMUTATIONS"] = str(args.permutations)
-    LOGGER.info("Executing 07_diagnosticity.ipynb (permutations=%s) ...", args.permutations)
+    if benches:
+        env["V2_BENCHES"] = ",".join(benches)
+    # The cache was just mirrored above, so the notebook's own S3 sync would
+    # only re-list ~200 k objects to find nothing new.
+    env["V2_SKIP_SYNC"] = "1"
+    LOGGER.info(
+        "Executing 07_diagnosticity.ipynb (permutations=%s, benches=%s) ...",
+        args.permutations, benches or "all",
+    )
     proc = subprocess.run(
         [
             sys.executable, "-m", "jupyter", "nbconvert",

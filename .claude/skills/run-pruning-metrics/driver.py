@@ -15,6 +15,7 @@ Usage
     python3 .claude/skills/run-pruning-metrics/driver.py smoke
     python3 .claude/skills/run-pruning-metrics/driver.py test
     python3 .claude/skills/run-pruning-metrics/driver.py notebook notebooks/experiment/05_tsne.ipynb
+    python3 .claude/skills/run-pruning-metrics/driver.py notebook notebooks/experiment/07_diagnosticity.ipynb --timeout 43200
     python3 .claude/skills/run-pruning-metrics/driver.py figures
     python3 .claude/skills/run-pruning-metrics/driver.py aws-check
 
@@ -82,10 +83,10 @@ import sys, time
 import nbformat
 from nbclient import NotebookClient
 
-nb_path, out_path = sys.argv[1], sys.argv[2]
+nb_path, out_path, timeout = sys.argv[1], sys.argv[2], int(sys.argv[3])
 t0 = time.time()
 nb = nbformat.read(nb_path, as_version=4)
-NotebookClient(nb, timeout=900, kernel_name="python3").execute()
+NotebookClient(nb, timeout=timeout, kernel_name="python3").execute()
 nbformat.write(nb, out_path)
 print(f"executed {{nb_path}} in {{time.time() - t0:.0f}}s")
 print(f"executed copy: {{out_path}}")
@@ -158,7 +159,7 @@ def cmd_notebook(args: argparse.Namespace) -> int:
     # cwd must be the notebook's own directory: cells derive RESULTS_DIR from
     # Path.cwd(), so running from repo root would read/write the wrong paths.
     return _run(
-        [VENV_PY, "-c", NOTEBOOK_SNIPPET, nb_path, out],
+        [VENV_PY, "-c", NOTEBOOK_SNIPPET, nb_path, out, str(args.timeout)],
         cwd=nb_path.parent,
     )
 
@@ -191,6 +192,14 @@ def main() -> int:
     nb = sub.add_parser("notebook", help="execute a notebook headlessly (cwd = its dir)")
     nb.add_argument("path", help="notebook path, relative to repo root")
     nb.add_argument("--out", help="where to write the executed copy (default: $TMPDIR)")
+    # Per-cell timeout. 05_tsne's slowest cell is seconds, but 07_diagnosticity
+    # builds 232x232 distance matrices in a single cell and runs for hours.
+    nb.add_argument(
+        "--timeout",
+        type=int,
+        default=900,
+        help="per-cell timeout in seconds (default: 900; 07_diagnosticity needs far more)",
+    )
     nb.set_defaults(fn=cmd_notebook)
     sub.add_parser("figures", help="list figure PNGs with mtimes").set_defaults(fn=cmd_figures)
     sub.add_parser("aws-check", help="read-only STS identity check (never launches)").set_defaults(fn=cmd_aws_check)

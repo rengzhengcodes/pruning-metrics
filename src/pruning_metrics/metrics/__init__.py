@@ -41,6 +41,14 @@ from pruning_metrics.metrics.cluster_stats import (
     partial_mantel,
     silhouette_by_label,
 )
+from pruning_metrics.metrics.embedding_quality import (
+    continuity,
+    effective_k,
+    embedding_quality,
+    kruskal_stress1,
+    shepard_rho,
+    trustworthiness,
+)
 from pruning_metrics.metrics.distributions import (
     TokenStepDict,
     TopAlternativeDict,
@@ -50,9 +58,13 @@ from pruning_metrics.metrics.distributions import (
     compute_kld,
 )
 from pruning_metrics.metrics.masks import (
+    PackedDigest,
     extract_pruning_masks,
     jaccard_distance,
+    jaccard_distance_packed,
+    jaccard_matrix_packed,
     load_digest,
+    load_digest_packed,
     load_packed_masks,
     make_mask_digest,
     save_digest,
@@ -72,10 +84,20 @@ __all__ = [
     "make_mask_digest",
     "save_digest",
     "load_digest",
+    "PackedDigest",
+    "load_digest_packed",
     "jaccard_distance",
+    "jaccard_distance_packed",
+    "jaccard_matrix_packed",
     "mantel",
     "partial_mantel",
     "silhouette_by_label",
     "ari_vs_labels",
     "label_permutation_pvalue",
+    "trustworthiness",
+    "continuity",
+    "kruskal_stress1",
+    "shepard_rho",
+    "embedding_quality",
+    "effective_k",
 ]

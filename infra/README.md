@@ -91,6 +91,43 @@ AWS_PROFILE=rengz python3 infra/provisioning/launch_gpu_instance.py \
 `--dry-run` skips `RunInstances` (still uploads tarball + writes
 `infra/provisioning/_last_userdata.sh` for inspection).
 
+### The `v2_analysis` runner (CPU, no GPU needed)
+
+`--runner v2_analysis` executes `notebooks/experiment/07_diagnosticity.ipynb`
+headlessly. It needs no GPU, so launch it on a compute-optimised instance --
+the DLAMI boots fine without one, and the bootstrap's `torch.cuda` line simply
+reports `cuda False`.
+
+The heavy part is cell 10, which builds a 232x232 distance matrix per
+`(benchmark, metric)`. Measured cost is dominated by one benchmark:
+`math:openai_gsm8k:main` alone is ~29 of the ~31 core-hours (112-token answers
+versus 3-6 for the MCQ sets). Use `--runner-env V2_BENCHES=...` to scope a run;
+it filters both the S3 cache sync and the notebook itself.
+
+```bash
+AWS_PROFILE=rengz python3 infra/provisioning/launch_gpu_instance.py \
+    --region us-east-1 --availability-zone us-east-1d \
+    --instance-type c7i.16xlarge --max-spot-price 1.90 \
+    --results-bucket pruning-metrics-results-414266451290 \
+    --results-prefix prune_eval_v2_analysis \
+    --runner v2_analysis \
+    --runner-env V2_BENCHES=math:openai_gsm8k:main \
+    --runner-env V2_PERMUTATIONS=4999 \
+    --root-volume-gib 150
+```
+
+Results land in
+`s3://<bucket>/prune_eval_v2_analysis/<run_id>/results/v2_pairwise_*`; pull
+those into `notebooks/experiment/results/` and re-run the notebook locally to
+regenerate figures across every benchmark at once.
+
+**Capacity, not price, is the binding constraint.** The account has a 1152
+vCPU Standard-spot quota in us-east-1, yet `c7i.16xlarge` in `us-east-1c`
+returned `InsufficientInstanceCapacity` while `us-east-1d` fulfilled
+immediately. The launcher returns exit code 2 for that case (and 3 for quota
+exhaustion) precisely so a caller can walk a candidate list; be flexible about
+both AZ and instance family rather than retrying one pair.
+
 ## Monitoring a running job
 
 The instance has no SSH key by default; access it via
