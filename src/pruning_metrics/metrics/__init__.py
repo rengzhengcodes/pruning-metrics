@@ -42,10 +42,12 @@ from pruning_metrics.metrics.cluster_stats import (
     silhouette_by_label,
 )
 from pruning_metrics.metrics.embedding_quality import (
+    baseline_distances,
     continuity,
     effective_k,
     embedding_quality,
     kruskal_stress1,
+    linear_r2,
     shepard_rho,
     trustworthiness,
 )
@@ -100,4 +102,6 @@ __all__ = [
     "shepard_rho",
     "embedding_quality",
     "effective_k",
+    "baseline_distances",
+    "linear_r2",
 ]

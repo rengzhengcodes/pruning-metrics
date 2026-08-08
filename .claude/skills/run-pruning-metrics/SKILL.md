@@ -65,11 +65,20 @@ math is in `src/pruning_metrics/embedding.py` and
 `src/pruning_metrics/metrics/embedding_quality.py` — both unit-tested, so prefer
 changing those over editing notebook cells.
 
+**Both notebooks also regress real degradation on embedding radius** (distance
+from the unpruned baseline) — 05 against measured `pass_at_1_drop`
+(`results/v1_embedding_r2.csv`, `results/r2_figures/`), 07 against
+log-perplexity increase read from each run's `summary.json`
+(`results/v2_embedding_r2.csv`). Every table carries a `raw` control column
+using distance in the original matrix, which is the ceiling each reducer is
+trying to preserve; t-SNE and UMAP lose most of it because their distance scale
+saturates.
+
 Notebook execution matrix (all verified):
 
 | Notebook | Needs AWS? | Time | Outputs |
 |---|---|---|---|
-| `notebooks/experiment/05_tsne.ipynb` | no — fully cache-local | ~50 s | `results/{tsne,umap,pca,isomap,lle}_figures/`, `results/cal_signal_figures/` |
+| `notebooks/experiment/05_tsne.ipynb` | no — fully cache-local | ~95 s | `results/{tsne,umap,pca,isomap,lle}_figures/`, `results/cal_signal_figures/`, `results/r2_figures/`, `results/v1_embedding_r2.csv` |
 | `notebooks/experiment/04_metric_spaces.ipynb` | yes, read-only S3 (9 small summary.json + listings; run `aws-check` first) | ~6.5 min | `results/metric_space_*.csv`, pairwise `.npy` caches |
 | `notebooks/experiment/07_diagnosticity.ipynb` | only to sync new runs — set `V2_SKIP_SYNC=1` to run purely off the local cache | **~25 min** on the one cached benchmark; **hours** if it has to build matrices (see below) | `results/v2_embedding_figures/`, `results/v2_embedding_quality.csv`, `results/v2_embeddings/`, `results/v2_jaccard.npy` |
 | `notebooks/experiment/01–03`, `notebooks/aws_tutorial/01–04` | yes — **launches paid GPU spot instances** (01/02) | hours | S3 |

@@ -12,10 +12,12 @@ import numpy as np
 import pytest
 
 from pruning_metrics.metrics.embedding_quality import (
+    baseline_distances,
     continuity,
     effective_k,
     embedding_quality,
     kruskal_stress1,
+    linear_r2,
     shepard_rho,
     trustworthiness,
 )
@@ -231,6 +233,100 @@ def test_embedding_quality_agrees_with_individual_functions() -> None:
     assert result["alpha"] == pytest.approx(kruskal_stress1(D, Y)[1])
     assert result["shepard_rho"] == pytest.approx(shepard_rho(D, Y))
     assert result["n"] == 60 and result["k"] == 12
+
+
+# ---------------------------------------------------------------------------
+# Predictive validity: baseline_distances + linear_r2
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_distances_are_zero_at_the_reference() -> None:
+    Y = _blobs(n=20, dim=2, seed=30)
+    d = baseline_distances(Y, 0)
+    assert d[0] == 0.0
+    assert d.shape == (20,)
+    assert (d[1:] > 0).all()
+
+
+def test_baseline_distances_match_manual_norm() -> None:
+    Y = _blobs(n=15, dim=2, seed=31)
+    expected = np.sqrt(((Y - Y[3]) ** 2).sum(axis=1))
+    assert np.allclose(baseline_distances(Y, 3), expected)
+
+
+def test_baseline_distances_are_translation_invariant() -> None:
+    """Embeddings are only defined up to position; the measure must not care."""
+    Y = _blobs(n=20, dim=2, seed=32)
+    assert np.allclose(baseline_distances(Y, 0), baseline_distances(Y + 17.0, 0))
+
+
+def test_baseline_distances_rejects_bad_index() -> None:
+    with pytest.raises(IndexError):
+        baseline_distances(_blobs(n=5, dim=2, seed=33), 99)
+
+
+def test_linear_r2_is_one_for_an_exact_line() -> None:
+    x = np.arange(20, dtype=float)
+    out = linear_r2(x, 3.0 * x + 5.0)
+    assert out["r2"] == pytest.approx(1.0)
+    assert out["slope"] == pytest.approx(3.0)
+    assert out["intercept"] == pytest.approx(5.0)
+    assert out["n"] == 20
+
+
+def test_linear_r2_matches_squared_pearson() -> None:
+    """Same convention as 04_metric_spaces so the numbers are comparable."""
+    rng = np.random.default_rng(34)
+    x = rng.normal(size=50)
+    y = 0.4 * x + rng.normal(scale=0.8, size=50)
+    r = np.corrcoef(x, y)[0, 1]
+    assert linear_r2(x, y)["r2"] == pytest.approx(r**2)
+
+
+def test_linear_r2_is_sign_blind_but_r_is_not() -> None:
+    x = np.arange(20, dtype=float)
+    down = linear_r2(x, -2.0 * x)
+    assert down["r2"] == pytest.approx(1.0)
+    assert down["r"] == pytest.approx(-1.0)
+    assert down["slope"] == pytest.approx(-2.0)
+
+
+def test_linear_r2_drops_non_finite_pairs() -> None:
+    """The v2 grid has variants with no performance record; they must not poison the fit."""
+    x = np.arange(10, dtype=float)
+    y = 2.0 * x
+    y[3] = np.nan
+    x_bad = x.copy()
+    x_bad[7] = np.inf
+    out = linear_r2(x_bad, y)
+    assert out["n"] == 8
+    assert out["r2"] == pytest.approx(1.0)
+
+
+def test_linear_r2_needs_three_points() -> None:
+    out = linear_r2([1.0, 2.0], [1.0, 2.0])
+    assert out["n"] == 2
+    assert np.isnan(out["r2"])
+
+
+def test_linear_r2_of_constant_input_is_nan() -> None:
+    assert np.isnan(linear_r2(np.ones(10), np.arange(10.0))["r2"])
+    assert np.isnan(linear_r2(np.arange(10.0), np.ones(10))["r2"])
+
+
+def test_linear_r2_rejects_length_mismatch() -> None:
+    with pytest.raises(ValueError, match="same length"):
+        linear_r2(np.arange(5.0), np.arange(6.0))
+
+
+def test_radial_fit_recovers_a_planted_relationship() -> None:
+    """End-to-end: degradation proportional to embedding radius scores near 1."""
+    rng = np.random.default_rng(35)
+    Y = rng.normal(size=(60, 2))
+    Y[0] = 0.0  # baseline at the origin
+    radius = baseline_distances(Y, 0)
+    degradation = 1.5 * radius + rng.normal(scale=0.01, size=60)
+    assert linear_r2(radius, degradation)["r2"] > 0.99
 
 
 # ---------------------------------------------------------------------------

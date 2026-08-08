@@ -51,6 +51,8 @@ except ImportError as _exc:  # pragma: no cover - mirrors distributions.py
     ) from _exc
 
 __all__ = [
+    "baseline_distances",
+    "linear_r2",
     "effective_k",
     "trustworthiness",
     "continuity",
@@ -303,6 +305,98 @@ def shepard_rho(D: np.ndarray, Y: np.ndarray) -> float:
         return float("nan")
     rho = spearmanr(d, y).statistic
     return float(rho)
+
+
+# ---------------------------------------------------------------------------
+# Predictive validity
+# ---------------------------------------------------------------------------
+
+
+def baseline_distances(Y: np.ndarray, baseline_idx: int = 0) -> np.ndarray:
+    """Euclidean distance from one reference point to every point in an embedding.
+
+    In this experiment the reference is the unpruned baseline model, so the
+    result is "how far did the picture move this network from where it
+    started" -- the embedding's own claim about how damaged each network is.
+    Regressing a real degradation measure on it (see :func:`linear_r2`) asks
+    whether that claim holds up.
+
+    Parameters
+    ----------
+    Y:
+        ``(n, d)`` embedding coordinates.
+    baseline_idx:
+        Row index of the reference point.
+
+    Returns
+    -------
+    np.ndarray
+        Length-``n`` distances; entry ``baseline_idx`` is 0.
+
+    Raises
+    ------
+    IndexError
+        If ``baseline_idx`` is out of range.
+    """
+    Y = np.asarray(Y, dtype=np.float64)
+    if Y.ndim != 2:
+        raise ValueError(f"Y must be 2-D, got shape {Y.shape}")
+    if not -Y.shape[0] <= baseline_idx < Y.shape[0]:
+        raise IndexError(
+            f"baseline_idx {baseline_idx} out of range for {Y.shape[0]} points"
+        )
+    return np.linalg.norm(Y - Y[baseline_idx], axis=1)
+
+
+def linear_r2(x: np.ndarray, y: np.ndarray) -> dict[str, Any]:
+    """Least-squares fit of ``y`` on ``x``, reported as R-squared plus the line.
+
+    R-squared here is the squared Pearson correlation, matching the convention
+    already used for the metric-versus-accuracy analysis in
+    ``04_metric_spaces.ipynb`` so the numbers are comparable.
+
+    Non-finite pairs are dropped rather than poisoning the fit -- the v2 grid
+    has variants with no performance record at all -- and the surviving count
+    is returned so a high R-squared on three points cannot be mistaken for a
+    result.
+
+    Parameters
+    ----------
+    x, y:
+        Equal-length 1-D arrays.
+
+    Returns
+    -------
+    dict
+        ``n`` (pairs actually used), ``r2``, ``r``, ``slope``, ``intercept``.
+        Every statistic is ``nan`` when fewer than 3 pairs survive or either
+        variable is constant.
+
+    Raises
+    ------
+    ValueError
+        If ``x`` and ``y`` have different lengths.
+    """
+    x = np.asarray(x, dtype=np.float64).ravel()
+    y = np.asarray(y, dtype=np.float64).ravel()
+    if x.size != y.size:
+        raise ValueError(f"x and y must be the same length, got {x.size} and {y.size}")
+
+    keep = np.isfinite(x) & np.isfinite(y)
+    x, y = x[keep], y[keep]
+    nan = float("nan")
+    if x.size < 3 or np.ptp(x) == 0.0 or np.ptp(y) == 0.0:
+        return {"n": int(x.size), "r2": nan, "r": nan, "slope": nan, "intercept": nan}
+
+    slope, intercept = np.polyfit(x, y, 1)
+    r = float(np.corrcoef(x, y)[0, 1])
+    return {
+        "n": int(x.size),
+        "r2": float(r**2),
+        "r": r,
+        "slope": float(slope),
+        "intercept": float(intercept),
+    }
 
 
 # ---------------------------------------------------------------------------
