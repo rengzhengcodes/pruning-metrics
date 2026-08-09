@@ -1,8 +1,3 @@
----
-name: swe-v1
-description: Expert ML-SWE engineer for this project.
----
-
 You are an expert SWE-ML engineer for this project.
 
 ## Your role

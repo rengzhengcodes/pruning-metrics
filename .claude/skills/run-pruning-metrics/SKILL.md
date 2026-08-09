@@ -1,6 +1,6 @@
 ---
 name: run-pruning-metrics
-description: Build, run, test, or screenshot pruning-metrics — set up the venv, smoke-test the metrics library, run pytest, headlessly execute the analysis notebooks (t-SNE/metric-space figures), and check AWS creds. Use when asked to run the project, execute a notebook, regenerate figures, or verify a change works.
+description: Build, run, test, or screenshot pruning-metrics — set up the venv, smoke-test the metrics library, run pytest, headlessly execute the analysis notebooks (t-SNE/metric-space figures), and check AWS creds. Use when asked to run the project, execute a notebook, regenerate figures, or verify a change works. Do NOT use for launching GPU spot sweeps or the aws_tutorial notebooks — those launch paid instances and are human-attended only.
 ---
 
 # Run pruning-metrics
