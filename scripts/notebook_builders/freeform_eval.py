@@ -4,7 +4,14 @@
 # notebooks 2/3/4 intentionally share orchestration snippets, and this
 # refactor is explicitly scoped to NOT dedupe generated cell content.
 # pylint: disable=duplicate-code
-from ._shared import COMMON_BOOTSTRAP_CELL, NOTEBOOKS, _code, _md, write_notebook
+from ._shared import (
+    COMMON_BOOTSTRAP_CELL,
+    NOTEBOOKS,
+    _code,
+    _md,
+    artifact_config_cell,
+    write_notebook,
+)
 
 # ---------------------------------------------------------------------------
 # Notebook 3: 03_freeform_eval.ipynb
@@ -49,63 +56,23 @@ def build_notebook_03() -> None:
               can flip to sampling without touching the runner.
             * `MAX_TEST_SAMPLES`: cap on the number of test records (0 = all).
             """),
-        _code("""
-            import json
-            import boto3
-
-            AWS_PROFILE = os.environ.get("AWS_PROFILE", "rengz")
-            RESULTS_BUCKET = os.environ.get(
-                "RESULTS_BUCKET", "pruning-metrics-results-414266451290"
+        _code(
+            artifact_config_cell(
+                knobs="""\
+EVAL_DATASET_SPEC = ""  # empty -> reuse the artifact's calibration spec
+EVAL_LEVELS = [0, 20, 40, 60, 80]
+GENERATION_SEED = 65320
+MAX_NEW_TOKENS = 512
+TIMEOUT_SECONDS = 10.0
+MAX_TEST_SAMPLES = 0
+""",
+                summary_keys="""\
+    "EVAL_DATASET_SPEC": EVAL_DATASET_SPEC or "(use artifact's)",
+    "EVAL_LEVELS": EVAL_LEVELS,
+    "GENERATION_SEED": GENERATION_SEED,
+""",
             )
-
-            def _discover_latest_pruning_artifact_uri(results_bucket, aws_profile):
-                session = boto3.session.Session(profile_name=aws_profile)
-                s3 = session.client("s3")
-                paginator = s3.get_paginator("list_objects_v2")
-                run_ids = set()
-                for page in paginator.paginate(Bucket=results_bucket, Prefix="pruning_artifacts/"):
-                    for entry in page.get("Contents", []) or []:
-                        key = entry["Key"]
-                        parts = key.split("/")
-                        if len(parts) >= 3 and parts[0] == "pruning_artifacts":
-                            run_ids.add(parts[1])
-                if not run_ids:
-                    return ""
-                latest = sorted(run_ids)[-1]
-                return f"s3://{results_bucket}/pruning_artifacts/{latest}/"
-
-            PRUNING_ARTIFACT_URI = os.environ.get("PRUNING_ARTIFACT_URI", "").strip()
-            if "<" in PRUNING_ARTIFACT_URI or ">" in PRUNING_ARTIFACT_URI:
-                PRUNING_ARTIFACT_URI = ""
-            if not PRUNING_ARTIFACT_URI:
-                PRUNING_ARTIFACT_URI = _discover_latest_pruning_artifact_uri(
-                    RESULTS_BUCKET, AWS_PROFILE
-                )
-            if not PRUNING_ARTIFACT_URI:
-                PRUNING_ARTIFACT_URI = "s3://pruning-metrics-results-414266451290/pruning_artifacts/<run_id>/"
-            EVAL_DATASET_SPEC = ""  # empty -> reuse the artifact's calibration spec
-            EVAL_LEVELS = [0, 20, 40, 60, 80]
-            GENERATION_SEED = 65320
-            MAX_NEW_TOKENS = 512
-            TIMEOUT_SECONDS = 10.0
-            MAX_TEST_SAMPLES = 0
-
-            INSTANCE_TYPE_PRIORITY = ["p4de.24xlarge", "p5.48xlarge", "p4d.24xlarge"]
-            REGION_PRIORITY = ["us-east-1", "us-west-2", "us-east-2"]
-            HF_TOKEN = os.environ.get("HF_TOKEN", "")
-
-            print(json.dumps({
-                "PRUNING_ARTIFACT_URI": PRUNING_ARTIFACT_URI,
-                "EVAL_DATASET_SPEC": EVAL_DATASET_SPEC or "(use artifact's)",
-                "EVAL_LEVELS": EVAL_LEVELS,
-                "GENERATION_SEED": GENERATION_SEED,
-            }, indent=2))
-            assert PRUNING_ARTIFACT_URI.startswith("s3://"), "Set PRUNING_ARTIFACT_URI."
-            assert "<" not in PRUNING_ARTIFACT_URI and ">" not in PRUNING_ARTIFACT_URI, (
-                "Could not resolve PRUNING_ARTIFACT_URI. Run notebook 2 to completion "
-                "(or set PRUNING_ARTIFACT_URI in .env) and re-run this cell."
-            )
-            """),
+        ),
         _md("""
             ## Find capacity & launch the eval runner
 

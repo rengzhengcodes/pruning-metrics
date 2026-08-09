@@ -6,9 +6,9 @@ import math
 
 import pytest
 
+from helpers.token_steps import make_step as _make_step
 from pruning_metrics.metrics.distributions import (
     TokenStepDict,
-    TopAlternativeDict,
     compute_chamfer,
     compute_emd,
     compute_jsd,
@@ -18,33 +18,6 @@ from pruning_metrics.metrics.distributions import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_alt(token_id: int, logprob: float) -> TopAlternativeDict:
-    return TopAlternativeDict(
-        token_id=token_id,
-        token_text=f"tok{token_id}",
-        logprob=logprob,
-    )
-
-
-def _make_step(
-    logprobs: list[float],
-    token_ids: list[int] | None = None,
-) -> TokenStepDict:
-    """Build a minimal TokenStepDict with the given top-alternatives."""
-    if token_ids is None:
-        token_ids = list(range(len(logprobs)))
-    alts = [_make_alt(tid, lp) for tid, lp in zip(token_ids, logprobs)]
-    return TokenStepDict(
-        position=0,
-        target_token_id=token_ids[0] if token_ids else 0,
-        target_token_text="",
-        target_logprob=logprobs[0] if logprobs else 0.0,
-        target_prob=math.exp(logprobs[0]) if logprobs else 1.0,
-        rank=1,
-        top_alternatives=alts,
-    )
 
 
 def _uniform_steps(

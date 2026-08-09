@@ -34,6 +34,7 @@ from pruning_metrics.dim_reduction import (
     tsne,
     umap,
 )
+from pruning_metrics._registry import build_module_registry
 from pruning_metrics.dim_reduction.base import ReducerSpec
 from pruning_metrics.dim_reduction.classical_mds import classical_mds_coords
 
@@ -59,12 +60,14 @@ _REDUCER_MODULES = (
 )
 
 #: Modules keyed by reducer key — the single lookup table behind both the
-#: public :data:`REDUCERS` dict and ``embed_2d``'s dispatch.
-_MODULES_BY_KEY = {m.SPEC.key: m for m in _REDUCER_MODULES}
-
-# A duplicated key would silently drop a reducer from the registry.
-if len(_MODULES_BY_KEY) != len(_REDUCER_MODULES):
-    raise ImportError("duplicate SPEC.key among dim_reduction modules")
+#: public :data:`REDUCERS` dict and ``embed_2d``'s dispatch. The shared
+#: helper raises ImportError on a duplicated key, which would otherwise
+#: silently drop a reducer from the registry.
+_MODULES_BY_KEY = build_module_registry(
+    _REDUCER_MODULES,
+    lambda m: m.SPEC.key,
+    what="SPEC.key among dim_reduction modules",
+)
 
 #: Public registry: reducer key -> static description.
 REDUCERS: dict[str, ReducerSpec] = {key: m.SPEC for key, m in _MODULES_BY_KEY.items()}

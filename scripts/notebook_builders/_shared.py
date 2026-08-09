@@ -86,3 +86,94 @@ print("REPO_ROOT =", REPO_ROOT)
 print("AWS_PROFILE =", os.environ.get("AWS_PROFILE"))
 print("AWS_REGION  =", os.environ.get("AWS_REGION"))
 """
+
+
+# ---------------------------------------------------------------------------
+# Shared artifact-config cell (notebooks 03 and 04)
+# ---------------------------------------------------------------------------
+
+#: Shared text of the eval notebooks' artifact-config cell: the artifact
+#: discovery helper, URI resolution and fallback. Identical in 03 and 04.
+_ARTIFACT_CONFIG_HEAD = """import json
+import boto3
+
+AWS_PROFILE = os.environ.get("AWS_PROFILE", "rengz")
+RESULTS_BUCKET = os.environ.get(
+    "RESULTS_BUCKET", "pruning-metrics-results-414266451290"
+)
+
+def _discover_latest_pruning_artifact_uri(results_bucket, aws_profile):
+    session = boto3.session.Session(profile_name=aws_profile)
+    s3 = session.client("s3")
+    paginator = s3.get_paginator("list_objects_v2")
+    run_ids = set()
+    for page in paginator.paginate(Bucket=results_bucket, Prefix="pruning_artifacts/"):
+        for entry in page.get("Contents", []) or []:
+            key = entry["Key"]
+            parts = key.split("/")
+            if len(parts) >= 3 and parts[0] == "pruning_artifacts":
+                run_ids.add(parts[1])
+    if not run_ids:
+        return ""
+    latest = sorted(run_ids)[-1]
+    return f"s3://{results_bucket}/pruning_artifacts/{latest}/"
+
+PRUNING_ARTIFACT_URI = os.environ.get("PRUNING_ARTIFACT_URI", "").strip()
+if "<" in PRUNING_ARTIFACT_URI or ">" in PRUNING_ARTIFACT_URI:
+    PRUNING_ARTIFACT_URI = ""
+if not PRUNING_ARTIFACT_URI:
+    PRUNING_ARTIFACT_URI = _discover_latest_pruning_artifact_uri(
+        RESULTS_BUCKET, AWS_PROFILE
+    )
+if not PRUNING_ARTIFACT_URI:
+    PRUNING_ARTIFACT_URI = "s3://pruning-metrics-results-414266451290/pruning_artifacts/<run_id>/"
+"""
+
+#: Shared middle: instance/region priorities and the summary-print opener.
+_ARTIFACT_CONFIG_MID = """
+INSTANCE_TYPE_PRIORITY = ["p4de.24xlarge", "p5.48xlarge", "p4d.24xlarge"]
+REGION_PRIORITY = ["us-east-1", "us-west-2", "us-east-2"]
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+
+print(json.dumps({
+    "PRUNING_ARTIFACT_URI": PRUNING_ARTIFACT_URI,
+"""
+
+#: Shared tail: summary-print closer and the artifact-URI asserts.
+_ARTIFACT_CONFIG_TAIL = """}, indent=2))
+assert PRUNING_ARTIFACT_URI.startswith("s3://"), "Set PRUNING_ARTIFACT_URI."
+assert "<" not in PRUNING_ARTIFACT_URI and ">" not in PRUNING_ARTIFACT_URI, (
+    "Could not resolve PRUNING_ARTIFACT_URI. Run notebook 2 to completion "
+    "(or set PRUNING_ARTIFACT_URI in .env) and re-run this cell."
+)
+"""
+
+
+def artifact_config_cell(*, knobs: str, summary_keys: str) -> str:
+    """Assemble notebook 03/04's artifact-config cell from shared text.
+
+    The 30-line artifact-discovery helper, priority lists, and asserts are
+    identical between the two eval notebooks; only each runner's knob
+    block and printed summary keys differ.
+
+    Parameters
+    ----------
+    knobs:
+        Runner-specific configuration lines placed between the artifact
+        fallback and the instance-priority lists. Newline-terminated.
+    summary_keys:
+        Runner-specific entries of the printed JSON summary.
+        Newline-terminated.
+
+    Returns
+    -------
+    str
+        The complete cell source, ready for :func:`_code`.
+    """
+    return (
+        _ARTIFACT_CONFIG_HEAD
+        + knobs
+        + _ARTIFACT_CONFIG_MID
+        + summary_keys
+        + _ARTIFACT_CONFIG_TAIL
+    )

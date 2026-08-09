@@ -20,12 +20,12 @@ import numpy as np
 import pytest
 from scipy.stats import wasserstein_distance
 
+from helpers.token_steps import make_step as _make_step
 from pruning_metrics.metrics.distributions import (
     METRIC_FUNCS,
     METRIC_INFO,
     METRIC_NAMES,
     TokenStepDict,
-    TopAlternativeDict,
     _wasserstein_p,
     compute_all,
     compute_bhattacharyya,
@@ -47,28 +47,6 @@ from pruning_metrics.metrics.distributions import (
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_distributions.py so the two files read alike)
 # ---------------------------------------------------------------------------
-
-
-def _make_alt(token_id: int, logprob: float) -> TopAlternativeDict:
-    return TopAlternativeDict(
-        token_id=token_id, token_text=f"tok{token_id}", logprob=logprob
-    )
-
-
-def _make_step(
-    logprobs: list[float], token_ids: list[int] | None = None
-) -> TokenStepDict:
-    if token_ids is None:
-        token_ids = list(range(len(logprobs)))
-    return TokenStepDict(
-        position=0,
-        target_token_id=token_ids[0] if token_ids else 0,
-        target_token_text="",
-        target_logprob=logprobs[0] if logprobs else 0.0,
-        target_prob=math.exp(logprobs[0]) if logprobs else 1.0,
-        rank=1,
-        top_alternatives=[_make_alt(tid, lp) for tid, lp in zip(token_ids, logprobs)],
-    )
 
 
 def _peaked(n_positions: int = 4) -> list[TokenStepDict]:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterable
 
+from pruning_metrics._registry import build_module_registry
 from pruning_metrics.prob_measures import (
     bhattacharyya,
     chamfer,
@@ -63,13 +64,24 @@ _MEASURE_MODULES = (
     chamfer,
 )
 
+#: Modules keyed by measure name. The shared helper raises ImportError on
+#: a duplicated NAME, which would otherwise silently drop a measure from
+#: every table below.
+_MODULES_BY_NAME = build_module_registry(
+    _MEASURE_MODULES,
+    lambda m: m.NAME,
+    what="NAME among prob_measures modules",
+)
+
 #: Every distance in this package, in reporting order.
 METRIC_FUNCS: dict[str, Callable[[list, list], float]] = {
-    m.NAME: m.compute for m in _MEASURE_MODULES
+    name: m.compute for name, m in _MODULES_BY_NAME.items()
 }
 
 #: Metadata for each entry of :data:`METRIC_FUNCS`, same keys and order.
-METRIC_INFO: dict[str, MetricInfo] = {m.NAME: m.INFO for m in _MEASURE_MODULES}
+METRIC_INFO: dict[str, MetricInfo] = {
+    name: m.INFO for name, m in _MODULES_BY_NAME.items()
+}
 
 METRIC_NAMES: tuple[str, ...] = tuple(METRIC_FUNCS)
 
@@ -96,10 +108,6 @@ _STANDALONE_MODULES = tuple(
     for m in _MEASURE_MODULES
     if not hasattr(m, "kernel") and not hasattr(m, "transport_distance")
 )
-
-# A duplicated NAME would silently drop a measure from every table above.
-if len(METRIC_FUNCS) != len(_MEASURE_MODULES):
-    raise ImportError("duplicate NAME among prob_measures modules")
 
 
 def compute_all(
