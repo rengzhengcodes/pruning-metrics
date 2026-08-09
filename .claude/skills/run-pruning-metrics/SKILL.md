@@ -29,7 +29,7 @@ Linux, system python 3.12, in this container.
 ```bash
 python3 .claude/skills/run-pruning-metrics/driver.py setup       # venv + all deps (~2 min clean)
 python3 .claude/skills/run-pruning-metrics/driver.py smoke       # 4 metrics on real cached data, <5 s
-python3 .claude/skills/run-pruning-metrics/driver.py test        # pytest: 320 passed, 4 skipped (~120 s)
+python3 .claude/skills/run-pruning-metrics/driver.py test        # pytest: 359 passed, 4 skipped (~120 s)
 python3 .claude/skills/run-pruning-metrics/driver.py notebook notebooks/experiment/05_tsne.ipynb   # ~50 s
 python3 .claude/skills/run-pruning-metrics/driver.py figures     # list output PNGs with mtimes
 python3 .claude/skills/run-pruning-metrics/driver.py aws-check   # read-only STS identity, never launches
@@ -53,7 +53,9 @@ python3 .claude/skills/run-pruning-metrics/driver.py aws-check   # read-only STS
 **Verify a change visually:** run the notebook, then `figures` — the PNGs under
 `notebooks/experiment/results/{tsne,umap,pca,isomap,lle}_figures/`,
 `notebooks/experiment/results/cal_signal_figures/`,
-`notebooks/experiment/results/metric_family_figures/` and
+`notebooks/experiment/results/metric_family_figures/`,
+`notebooks/experiment/results/sweep_figures/`,
+`notebooks/experiment/results/grid_figures/` and
 `notebooks/experiment/results/v2_embedding_figures/`
 regenerate in place with fresh mtimes; open one to confirm it rendered.
 
@@ -107,7 +109,7 @@ Notebook execution matrix (all verified):
 | `notebooks/experiment/04_metric_spaces.ipynb` | yes, read-only S3 (9 small summary.json + listings; run `aws-check` first) | ~6.5 min | `results/metric_space_*.csv`, pairwise `.npy` caches |
 | `notebooks/experiment/07_diagnosticity.ipynb` | only to sync new runs — set `V2_SKIP_SYNC=1` to run purely off the local cache | **~25 min** on the one cached benchmark; **hours** if it has to build matrices (see below) | `results/v2_embedding_figures/`, `results/v2_embedding_quality.csv`, `results/v2_embeddings/`, `results/v2_jaccard.npy` |
 | `notebooks/experiment/08_distribution_metrics.ipynb` | no — fully cache-local | **~4.5 min** cold (builds 36 matrices), **~50 s** once cached | `results/metric_family_figures/`, `results/metric_{scale_audit,mds_spectrum,agreement,family_r2}.csv`, 36 new `pairwise_dist_*.npy` |
-| `notebooks/experiment/09_reducer_sweep.ipynb` | no — fully cache-local | **~4.5 min** (952 embeddings; `V1_ONLY=1` cuts it to ~40 s) | `results/sweep_figures/`, `results/reducer_sweep_{v1,v2}.csv` |
+| `notebooks/experiment/09_reducer_sweep.ipynb` | no — fully cache-local | **~5.5 min** (952 embeddings; `V1_ONLY=1` cuts it to ~40 s but skips the v2 grid sheets) | `results/sweep_figures/`, `results/grid_figures/`, `results/reducer_sweep_{v1,v2}.csv` |
 | `notebooks/experiment/01–03`, `notebooks/aws_tutorial/01–04` | yes — **launches paid GPU spot instances** (01/02) | hours | S3 |
 
 Never execute the GPU-launching notebooks headlessly. They call EC2
