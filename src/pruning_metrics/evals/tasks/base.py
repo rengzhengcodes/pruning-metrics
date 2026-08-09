@@ -87,8 +87,12 @@ class TaskAdapter(Protocol):
     Implementations live in
     :mod:`pruning_metrics.evals.tasks.coding`,
     :mod:`pruning_metrics.evals.tasks.math`, and
-    :mod:`pruning_metrics.evals.tasks.mcq`. The matching class names are
-    exposed via :data:`pruning_metrics.evals.tasks.registry.TASK_REGISTRY`.
+    :mod:`pruning_metrics.evals.tasks.mcq`. All five concrete adapters
+    (``coding``, ``math``, ``mcq``, ``mbpp``, ``mathqa``) are resolved by
+    name through
+    :func:`pruning_metrics.evals.tasks.registry.build_adapter`; the
+    :data:`~pruning_metrics.evals.tasks.registry.TASK_REGISTRY` table
+    holds only the three core adapters.
 
     Two flavours of "prompt" matter to the runners:
 

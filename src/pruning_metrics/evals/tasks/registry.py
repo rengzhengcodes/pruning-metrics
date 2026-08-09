@@ -1,8 +1,9 @@
 """Task adapter registry and spec parsing.
 
-Notebooks 2-4 select a task adapter by short name (``coding``, ``math``,
-``mcq``) or by a more detailed spec string. The spec grammar varies by
-adapter so that math / MCQ users can override either or both native splits:
+Notebooks and runners select a task adapter by short name (``coding``,
+``math``, ``mcq``, plus the v2 additions ``mbpp`` and ``mathqa``) or by a
+more detailed spec string. The spec grammar varies by adapter so that
+math / MCQ users can override either or both native splits:
 
 * ``coding[:<dataset_name>[:<test_split>]]`` -- HumanEval+ ships only a
   ``test`` split; the seeded 80/20 fallback produces calibration data.
@@ -14,9 +15,12 @@ adapter so that math / MCQ users can override either or both native splits:
 * ``mcq[:<dataset_name>[:<config>[:<train_split>[:<test_split>]]]]`` --
   default ``train_split=train, test_split=test`` (ARC-Challenge native
   splits; likewise no ``validation`` split required).
+* ``mbpp[:<dataset_name>[:<test_split>]]`` and
+  ``mathqa[:<dataset_name>[:<train_split>[:<test_split>]]]`` -- the v2
+  sweep additions; see :func:`build_adapter_from_spec` for details.
 
-This module provides both shapes plus light validation so the four
-notebooks have a single import.
+This module provides both shapes plus light validation so the notebooks
+and runners have a single import.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Tests for the spec-string parser used by the four notebooks."""
+"""Tests for the task-adapter spec-string parser and registry."""
 
 from __future__ import annotations
 

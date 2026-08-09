@@ -81,11 +81,12 @@ the **original** `D`, never against those coordinates, or a coords-based reducer
 gets graded on its own preprocessed input.
 
 **There are sixteen distributional distances, not four.**
-`src/pruning_metrics/metrics/distributions.py` defines the original
-`kld/jsd/emd/chamfer` plus twelve more (`rkld`, `jeffreys`, `tv`, `hellinger`,
+They live one-module-per-measure in `src/pruning_metrics/prob_measures/`
+(`kld`, `jsd`, `emd`, `chamfer`, `rkld`, `jeffreys`, `tv`, `hellinger`,
 `bhattacharyya`, `renyi05`, `chisq`, `renyi2`, `triangular`, `l2`, `cosine`,
-`wasserstein2`). Notebooks 04/05/07 still use the original four; **08 compares
-all sixteen**. When computing more than one, call `compute_all` rather than
+`wasserstein2`); `metrics/distributions.py` is a backwards-compatible facade
+re-exporting them. Notebooks 04/05/07 still use the original four; **08
+compares all sixteen**. When computing more than one, call `compute_all` rather than
 looping over the individual functions — it shares the per-position union-support
 alignment, so all sixteen cost about as much as one, and it returns bit-identical
 floats (there is a provenance cell in 08 that asserts this against the cached
@@ -164,12 +165,10 @@ with `.env` configured from `template.env`. Useless headless; use the driver.
 - **Notebooks are cwd-sensitive.** Every notebook derives `REPO_ROOT` and
   `RESULTS_DIR` from `Path.cwd()`. Execute them with cwd = the notebook's own
   directory (the driver does this) or they silently read/write wrong paths.
-- **The README's notebook paths are stale.** It documents `notebooks/*.ipynb`;
-  the real files are `notebooks/aws_tutorial/*.ipynb` (AWS walkthrough) and
-  `notebooks/experiment/*.ipynb` (the actual experiment + analysis).
-- **`scripts/build_notebooks.py` is stale too**: it regenerates the tutorial
-  notebooks into `notebooks/` root, not `notebooks/aws_tutorial/`. Don't run
-  it expecting to rebuild the tutorial in place.
+- **`scripts/build_notebooks.py` regenerates the tutorial in place.** It
+  writes `notebooks/aws_tutorial/*.ipynb` deterministically (pinned cell
+  ids), so a rebuild with no source change leaves `git diff` empty. It also
+  strips any saved cell outputs — don't run it to preserve executed output.
 - **`results/` is gitignored** — figures and CSVs regenerate in place with no
   git noise, but also no version history. `04_metric_spaces` rewrites
   `metric_space_{combined,distances,r2}.csv` on every run.

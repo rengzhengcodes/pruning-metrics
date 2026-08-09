@@ -4,7 +4,8 @@ Each adapter exposes a uniform interface for loading records, splitting them
 into train/test partitions deterministically, and verifying generated text
 against a ground-truth target. The registry in
 :mod:`pruning_metrics.evals.tasks.registry` lets downstream code select an
-adapter by short name (``coding``, ``math``, ``mcq``).
+adapter by short name (``coding``, ``math``, ``mcq``, ``mbpp``,
+``mathqa``).
 """
 
 from pruning_metrics.evals.tasks.base import (

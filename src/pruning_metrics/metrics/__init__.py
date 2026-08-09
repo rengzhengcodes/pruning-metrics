@@ -5,12 +5,13 @@ modules so downstream notebooks and tests have one import surface:
 
 * **Distributional distances** -- all sixteen measures implemented in
   :mod:`pruning_metrics.prob_measures` (``compute_kld``, ``compute_jsd``,
-  ``compute_emd``, ``compute_chamfer``, and twelve more), reached here
-  through the backwards-compatible
-  :mod:`pruning_metrics.metrics.distributions` facade. Use
-  :func:`compute_all` rather than looping over the individual functions
-  when more than one measure is wanted: it shares the per-position
-  alignment work, so all sixteen cost about as much as one.
+  ``compute_emd``, ``compute_chamfer``, and twelve more), imported here
+  directly from that package. (The backwards-compatible
+  :mod:`pruning_metrics.metrics.distributions` facade re-exports the same
+  names for older imports.) Use :func:`compute_all` rather than looping
+  over the individual functions when more than one measure is wanted: it
+  shares the per-position alignment work, so all sixteen cost about as
+  much as one.
 * **Pruning-mask utilities**, from :mod:`pruning_metrics.metrics.masks`
   -- extracting per-layer pruning masks (:func:`extract_pruning_masks`),
   packed digests for cheap storage and comparison

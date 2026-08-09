@@ -102,7 +102,10 @@ pruning-metrics/
 │       ├── 08_distribution_metrics.ipynb  # cross-compares all 16 distances
 │       └── 09_reducer_sweep.ipynb    # 16 distances x 14 reducers, full cross product
 ├── src/pruning_metrics/
-│   ├── notebook_helpers.py           # find_capacity / launch_runner / poll loops
+│   ├── notebook_helpers/             # notebook-side orchestration package
+│   │   ├── launch.py                 # find_capacity / launch_runner (+ fallback)
+│   │   ├── polling.py                # wait_for_artifact / wait_for_runner_completion
+│   │   └── util.py                   # list_results / run-id + JSON helpers
 │   ├── dim_reduction/                # 14 dimensionality reducers, one module each + registry
 │   │   ├── base.py                   # SPEC / fit contract shared by every reducer
 │   │   ├── tsne.py, umap.py, isomap.py, pca.py, ...  # one module per algorithm

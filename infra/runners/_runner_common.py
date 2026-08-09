@@ -5,6 +5,8 @@ Used by:
 * :mod:`infra.runners.run_pruning_calibration` (notebook 2),
 * :mod:`infra.runners.run_freeform_eval` (notebook 3),
 * :mod:`infra.runners.run_teacher_forced` (notebook 4),
+* :mod:`infra.runners.run_prune_eval_sweep` (v2 sweep, notebook 6),
+* :mod:`infra.runners.run_v2_analysis` (v2 analysis, notebook 7),
 * :mod:`infra.provisioning.launch_gpu_instance` (run-id generation).
 
 All helpers are torch-free at import time so the launcher / notebook helpers

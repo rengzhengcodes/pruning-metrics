@@ -46,7 +46,7 @@ python infra/provisioning/launch_gpu_instance.py \
 ```
 
 The notebooks build the right `runner_env` dict and call `launch_runner`
-in [`pruning_metrics.notebook_helpers`](../src/pruning_metrics/notebook_helpers.py),
+in [`pruning_metrics.notebook_helpers`](../src/pruning_metrics/notebook_helpers/),
 so most users never call this CLI directly.
 
 ## One-time AWS bootstrap
