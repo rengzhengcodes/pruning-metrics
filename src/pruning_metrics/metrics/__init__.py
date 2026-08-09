@@ -1,9 +1,18 @@
 """Distributional distance metrics for comparing token-prediction distributions.
 
-This package provides four symmetric or directional distance measures that
-operate on the per-token teacher-forced output stored in ``per_token.json``
-files produced by
-:mod:`pruning_metrics.evals.coding.teacher_forcing`.
+This package provides sixteen distance measures that operate on the per-token
+teacher-forced output stored in ``per_token.json`` files produced by
+:mod:`pruning_metrics.evals.coding.teacher_forcing`.  The four described below
+are the originals, used by notebooks 04, 05 and 07; the other twelve
+(``rkld``, ``jeffreys``, ``tv``, ``hellinger``, ``bhattacharyya``, ``renyi05``,
+``chisq``, ``renyi2``, ``triangular``, ``l2``, ``cosine``, ``wasserstein2``)
+are documented in :mod:`pruning_metrics.metrics.distributions` and compared
+against each other in notebook 08.
+
+Use :func:`compute_all` rather than a loop over the individual functions when
+more than one measure is wanted: it shares the per-position alignment work, so
+all sixteen cost about as much as one.  :data:`METRIC_INFO` carries the
+family, symmetry, boundedness and formula of each, for tables and axis labels.
 
 Metrics
 -------
@@ -52,12 +61,29 @@ from pruning_metrics.metrics.embedding_quality import (
     trustworthiness,
 )
 from pruning_metrics.metrics.distributions import (
+    METRIC_FUNCS,
+    METRIC_INFO,
+    METRIC_NAMES,
+    MetricInfo,
     TokenStepDict,
     TopAlternativeDict,
+    compute_all,
+    compute_bhattacharyya,
     compute_chamfer,
+    compute_chisq,
+    compute_cosine,
     compute_emd,
+    compute_hellinger,
+    compute_jeffreys,
     compute_jsd,
     compute_kld,
+    compute_l2,
+    compute_renyi05,
+    compute_renyi2,
+    compute_rkld,
+    compute_triangular,
+    compute_tv,
+    compute_wasserstein2,
 )
 from pruning_metrics.metrics.masks import (
     PackedDigest,
@@ -75,9 +101,26 @@ from pruning_metrics.metrics.masks import (
 
 __all__ = [
     "compute_kld",
+    "compute_rkld",
+    "compute_jeffreys",
     "compute_jsd",
+    "compute_tv",
+    "compute_hellinger",
+    "compute_bhattacharyya",
+    "compute_renyi05",
+    "compute_chisq",
+    "compute_renyi2",
+    "compute_triangular",
+    "compute_l2",
+    "compute_cosine",
     "compute_emd",
+    "compute_wasserstein2",
     "compute_chamfer",
+    "compute_all",
+    "METRIC_FUNCS",
+    "METRIC_INFO",
+    "METRIC_NAMES",
+    "MetricInfo",
     "TopAlternativeDict",
     "TokenStepDict",
     "extract_pruning_masks",

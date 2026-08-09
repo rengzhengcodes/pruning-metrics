@@ -29,7 +29,7 @@ Linux, system python 3.12, in this container.
 ```bash
 python3 .claude/skills/run-pruning-metrics/driver.py setup       # venv + all deps (~2 min clean)
 python3 .claude/skills/run-pruning-metrics/driver.py smoke       # 4 metrics on real cached data, <5 s
-python3 .claude/skills/run-pruning-metrics/driver.py test        # pytest: 233 passed, 4 skipped (~70 s)
+python3 .claude/skills/run-pruning-metrics/driver.py test        # pytest: 320 passed, 4 skipped (~120 s)
 python3 .claude/skills/run-pruning-metrics/driver.py notebook notebooks/experiment/05_tsne.ipynb   # ~50 s
 python3 .claude/skills/run-pruning-metrics/driver.py figures     # list output PNGs with mtimes
 python3 .claude/skills/run-pruning-metrics/driver.py aws-check   # read-only STS identity, never launches
@@ -52,7 +52,8 @@ python3 .claude/skills/run-pruning-metrics/driver.py aws-check   # read-only STS
 
 **Verify a change visually:** run the notebook, then `figures` — the PNGs under
 `notebooks/experiment/results/{tsne,umap,pca,isomap,lle}_figures/`,
-`notebooks/experiment/results/cal_signal_figures/` and
+`notebooks/experiment/results/cal_signal_figures/`,
+`notebooks/experiment/results/metric_family_figures/` and
 `notebooks/experiment/results/v2_embedding_figures/`
 regenerate in place with fresh mtimes; open one to confirm it rendered.
 
@@ -64,6 +65,18 @@ Kruskal stress-1, Shepard ρ) into `results/v2_embedding_quality.csv`. The share
 math is in `src/pruning_metrics/embedding.py` and
 `src/pruning_metrics/metrics/embedding_quality.py` — both unit-tested, so prefer
 changing those over editing notebook cells.
+
+**There are sixteen distributional distances, not four.**
+`src/pruning_metrics/metrics/distributions.py` defines the original
+`kld/jsd/emd/chamfer` plus twelve more (`rkld`, `jeffreys`, `tv`, `hellinger`,
+`bhattacharyya`, `renyi05`, `chisq`, `renyi2`, `triangular`, `l2`, `cosine`,
+`wasserstein2`). Notebooks 04/05/07 still use the original four; **08 compares
+all sixteen**. When computing more than one, call `compute_all` rather than
+looping over the individual functions — it shares the per-position union-support
+alignment, so all sixteen cost about as much as one, and it returns bit-identical
+floats (there is a provenance cell in 08 that asserts this against the cached
+matrices). `METRIC_INFO` carries each measure's family, symmetry, boundedness and
+formula for tables and axis labels.
 
 **Both notebooks also regress real degradation on embedding radius** (distance
 from the unpruned baseline) — 05 against measured `pass_at_1_drop`
@@ -81,6 +94,7 @@ Notebook execution matrix (all verified):
 | `notebooks/experiment/05_tsne.ipynb` | no — fully cache-local | ~95 s | `results/{tsne,umap,pca,isomap,lle}_figures/`, `results/cal_signal_figures/`, `results/r2_figures/`, `results/v1_embedding_r2.csv` |
 | `notebooks/experiment/04_metric_spaces.ipynb` | yes, read-only S3 (9 small summary.json + listings; run `aws-check` first) | ~6.5 min | `results/metric_space_*.csv`, pairwise `.npy` caches |
 | `notebooks/experiment/07_diagnosticity.ipynb` | only to sync new runs — set `V2_SKIP_SYNC=1` to run purely off the local cache | **~25 min** on the one cached benchmark; **hours** if it has to build matrices (see below) | `results/v2_embedding_figures/`, `results/v2_embedding_quality.csv`, `results/v2_embeddings/`, `results/v2_jaccard.npy` |
+| `notebooks/experiment/08_distribution_metrics.ipynb` | no — fully cache-local | **~4.5 min** cold (builds 36 matrices), **~50 s** once cached | `results/metric_family_figures/`, `results/metric_{scale_audit,mds_spectrum,agreement,family_r2}.csv`, 36 new `pairwise_dist_*.npy` |
 | `notebooks/experiment/01–03`, `notebooks/aws_tutorial/01–04` | yes — **launches paid GPU spot instances** (01/02) | hours | S3 |
 
 Never execute the GPU-launching notebooks headlessly. They call EC2
@@ -144,6 +158,13 @@ with `.env` configured from `template.env`. Useless headless; use the driver.
 - **`results/` is gitignored** — figures and CSVs regenerate in place with no
   git noise, but also no version history. `04_metric_spaces` rewrites
   `metric_space_{combined,distances,r2}.csv` on every run.
+- **Never delete or overwrite `results/pairwise_dist_{bench}_{kld,jsd,emd,chamfer}.npy`.**
+  Those four per benchmark are the provenance of the figures in 04/05/07 and
+  predate the batch builder. Notebook 08 loads them and writes only the twelve
+  new metrics per benchmark; its cell 11 asserts a fresh batch build reproduces
+  them bit-for-bit, which is the only thing tying old figures to new numbers.
+  Deleting one silently rebuilds it — same values, but the check stops meaning
+  anything.
 - `.venv` is currently complete and working (sklearn 1.9, umap-learn 0.5.12,
   numpy 2.4.6, scipy 1.18, matplotlib 3.11). `.venv312` lacks `umap-learn` and
   cannot run 05's UMAP section — prefer `.venv`, which is what the driver uses.
