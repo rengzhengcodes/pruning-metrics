@@ -1,16 +1,18 @@
 """Launch an EC2 spot GPU instance and bootstrap a chosen runner.
 
-The launcher is the same regardless of which of the four notebooks invokes
-it: it tars the repo, uploads it to S3, resolves the latest Deep Learning
-AMI, renders the user-data shell with the appropriate runner script path
-plus runner-specific environment variables, and calls ``RunInstances`` with
-the project's instance profile attached.
+The launcher is the same regardless of which notebook invokes it: it tars
+the repo, uploads it to S3, resolves the latest Deep Learning AMI, renders
+the user-data shell with the appropriate runner script path plus
+runner-specific environment variables, and calls ``RunInstances`` with the
+project's instance profile attached.
 
 Supported ``--runner`` values:
 
 * ``pruning_calibration`` -> ``infra/runners/run_pruning_calibration.py``
 * ``freeform_eval``       -> ``infra/runners/run_freeform_eval.py``
 * ``teacher_forced``      -> ``infra/runners/run_teacher_forced.py``
+* ``prune_eval_sweep``    -> ``infra/runners/run_prune_eval_sweep.py``
+* ``v2_analysis``         -> ``infra/runners/run_v2_analysis.py``
 
 Runner-specific knobs are passed via ``--runner-env KEY=VALUE`` (repeatable)
 or ``--runner-env-json '{"KEY": "VALUE"}'``. Each runner consumes those env
@@ -138,15 +140,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--instance-profile",
-        default=os.environ.get(
-            "EC2_INSTANCE_PROFILE_NAME", "pruning-metrics-ec2"
-        ),
+        default=os.environ.get("EC2_INSTANCE_PROFILE_NAME", "pruning-metrics-ec2"),
     )
     parser.add_argument(
         "--hf-token",
-        default=os.environ.get(
-            "HF_TOKEN", os.environ.get("HUGGINGFACE_HUB_TOKEN", "")
-        ),
+        default=os.environ.get("HF_TOKEN", os.environ.get("HUGGINGFACE_HUB_TOKEN", "")),
         help="Optional Hugging Face Hub token for gated model downloads.",
     )
     parser.add_argument(
@@ -194,9 +192,7 @@ def build_repo_tarball(repo_root: Path) -> bytes:
     return buffer.getvalue()
 
 
-def upload_tarball(
-    s3_client: Any, bucket: str, key: str, payload: bytes
-) -> None:
+def upload_tarball(s3_client: Any, bucket: str, key: str, payload: bytes) -> None:
     """Upload the tarball to S3 with a single thread-free ``put_object``.
 
     The tarball is a few MiB, so multipart parallelism buys nothing — and
@@ -446,6 +442,10 @@ def main() -> int:
                     "Ebs": {
                         "VolumeSize": args.root_volume_gib,
                         "VolumeType": "gp3",
+                        # Paid bump over the gp3 baseline (3000 IOPS /
+                        # 125 MiB/s) so the multi-GB model checkpoints and
+                        # the pip install during bootstrap read faster —
+                        # disk speed is startup wall-clock on a spot box.
                         "Iops": 6000,
                         "Throughput": 500,
                         "DeleteOnTermination": True,
@@ -466,8 +466,14 @@ def main() -> int:
                 }
             ],
             MetadataOptions={
+                # IMDSv2 only: metadata reads need a session token, which
+                # blocks the classic SSRF path to instance credentials.
                 "HttpTokens": "required",
                 "HttpEndpoint": "enabled",
+                # Let the token response cross one extra network hop so
+                # IMDS stays reachable from a nested network namespace
+                # (e.g. a container); the default of 1 confines it to
+                # host processes.
                 "HttpPutResponseHopLimit": 2,
             },
         )

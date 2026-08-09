@@ -141,11 +141,19 @@ def _rank_penalty(D_rank: np.ndarray, D_neighbors: np.ndarray, k: int) -> float:
     ind_neighbors = np.argsort(neighbors, axis=1)[:, :k]
 
     # inverted[i, j] = 1-based rank of point j from point i in D_rank.
+    # ind_rank is a per-row permutation; this scatter builds its per-row
+    # inverse: ordered[:-1, np.newaxis] (column [0..n-1]) broadcasts against
+    # ind_rank (n x n) to address (row i, column ind_rank[i, m]), and the
+    # assigned ordered[1:] ([1..n]) broadcasts along each row, so the point
+    # sorted into position m receives rank m + 1.
     inverted = np.zeros((n, n), dtype=int)
     ordered = np.arange(n + 1)
     inverted[ordered[:-1, np.newaxis], ind_rank] = ordered[1:]
 
+    # Gather each point's k nearest D_neighbors neighbours and look up their
+    # D_rank ranks; subtracting k leaves the "how far beyond k" excess.
     ranks = inverted[ordered[:-1, np.newaxis], ind_neighbors] - k
+    # Only neighbours ranked beyond k contribute: max(rank - k, 0) summed.
     penalty = float(np.sum(ranks[ranks > 0]))
     return 1.0 - penalty * (2.0 / (n * k * (2.0 * n - 3.0 * k - 1.0)))
 

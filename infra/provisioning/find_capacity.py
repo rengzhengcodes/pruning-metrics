@@ -61,9 +61,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--regions",
-        default=os.environ.get(
-            "EC2_REGION_PRIORITY", "us-east-1,us-west-2,us-east-2"
-        ),
+        default=os.environ.get("EC2_REGION_PRIORITY", "us-east-1,us-west-2,us-east-2"),
         help="Comma-separated AWS regions to probe (priority order).",
     )
     parser.add_argument(
@@ -93,9 +91,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def offered_azs_by_type(
-    ec2: Any, instance_types: list[str]
-) -> dict[str, set[str]]:
+def offered_azs_by_type(ec2: Any, instance_types: list[str]) -> dict[str, set[str]]:
     """Return the AZs that *currently* offer each instance type.
 
     One paginated ``DescribeInstanceTypeOfferings`` sweep covers every
@@ -137,10 +133,7 @@ def latest_spot_prices(
         for entry in page.get("SpotPriceHistory", []):
             key = (entry["InstanceType"], entry["AvailabilityZone"])
             timestamp = entry["Timestamp"]
-            if (
-                key not in latest
-                or timestamp > latest[key]["timestamp"]
-            ):
+            if key not in latest or timestamp > latest[key]["timestamp"]:
                 latest[key] = {
                     "timestamp": timestamp,
                     "price": float(entry["SpotPrice"]),
@@ -161,9 +154,7 @@ def find_candidates(
     # for ties, but we do not stop early so the caller can see fallbacks.
     for region_index, region in enumerate(regions):
         # One client per region, reused by both describe sweeps.
-        ec2 = boto3.client(
-            "ec2", region_name=region, config=boto_client_config()
-        )
+        ec2 = boto3.client("ec2", region_name=region, config=boto_client_config())
         try:
             offered = offered_azs_by_type(ec2, instance_types)
         except Exception as exc:  # pylint: disable=broad-exception-caught

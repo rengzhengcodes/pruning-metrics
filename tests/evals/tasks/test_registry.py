@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from pruning_metrics.evals.tasks import registry as registry_module
 from pruning_metrics.evals.tasks.coding import CodingTaskAdapter
 from pruning_metrics.evals.tasks.math import MathTaskAdapter
 from pruning_metrics.evals.tasks.mcq import MCQTaskAdapter
@@ -86,9 +85,7 @@ def test_build_adapter_from_spec_native_default_mcq() -> None:
 
 
 def test_build_adapter_from_spec_full_mcq() -> None:
-    adapter = build_adapter_from_spec(
-        "mcq:allenai/ai2_arc:ARC-Challenge:train:test"
-    )
+    adapter = build_adapter_from_spec("mcq:allenai/ai2_arc:ARC-Challenge:train:test")
     assert isinstance(adapter, MCQTaskAdapter)
     assert adapter.config == "ARC-Challenge"
     assert adapter.train_split == "train"

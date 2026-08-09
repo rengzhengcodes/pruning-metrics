@@ -29,16 +29,15 @@ from typing import Mapping, Sequence
 from datasets import load_dataset
 
 from pruning_metrics.evals.tasks.base import (
-    TaskAdapter,
+    HFSplitAdapter,
     TaskRecord,
     VerificationOutcome,
-    native_or_seeded_split,
 )
 
 _LETTER_PATTERN = re.compile(r"\b([A-E])\b")
 
 
-class MCQTaskAdapter(TaskAdapter):
+class MCQTaskAdapter(HFSplitAdapter):
     """Multiple-choice (ARC-Challenge-shaped) tasks.
 
     Parameters
@@ -59,6 +58,15 @@ class MCQTaskAdapter(TaskAdapter):
     """
 
     name = "mcq"
+    # Design: a private, overridable class attribute rather than a
+    # constructor parameter. MathQaTaskAdapter needs a different
+    # dataset_spec prefix ("mathqa") but must not gain a `spec_prefix`
+    # argument on its public __init__. Overriding this attribute lets
+    # MathQaTaskAdapter reuse this __init__ via a plain `super().__init__(...)`
+    # call -- `self._SPEC_PREFIX` resolves polymorphically to the subclass's
+    # value -- instead of bypassing this __init__ and calling HFSplitAdapter
+    # directly (which pylint flags as non-parent-init-called).
+    _SPEC_PREFIX = "mcq"
 
     def __init__(
         self,
@@ -67,16 +75,13 @@ class MCQTaskAdapter(TaskAdapter):
         train_split: str | None = "train",
         test_split: str = "test",
     ) -> None:
-        self.dataset_name = dataset_name
-        self.config = config
-        self.train_split = train_split
-        self.test_split = test_split
-        split_label = (
-            f"{train_split}+{test_split}" if train_split else test_split
+        super().__init__(
+            dataset_name=dataset_name,
+            spec_prefix=self._SPEC_PREFIX,
+            config=config,
+            train_split=train_split,
+            test_split=test_split,
         )
-        self.dataset_spec = f"mcq:{dataset_name}:{config}:{split_label}"
-        self._train_records: list[TaskRecord] | None = None
-        self._test_records: list[TaskRecord] | None = None
 
     def _load_split(self, split: str) -> list[TaskRecord]:
         """Materialise ARC-style rows from a single Hugging Face split."""
@@ -111,36 +116,6 @@ class MCQTaskAdapter(TaskAdapter):
                 )
             )
         return records
-
-    def load_records(self) -> list[TaskRecord]:
-        """Concatenate train + test records (train first when available)."""
-
-        if self._test_records is None:
-            self._test_records = self._load_split(self.test_split)
-        if self.train_split is not None and self._train_records is None:
-            self._train_records = self._load_split(self.train_split)
-
-        if self._train_records is not None:
-            return list(self._train_records) + list(self._test_records)
-        return list(self._test_records)
-
-    def train_test_split(
-        self,
-        seed: int = 65320,
-        train_frac: float = 0.8,
-        explicit_train_ids: Sequence[str] | None = None,
-        explicit_test_ids: Sequence[str] | None = None,
-    ) -> tuple[list[TaskRecord], list[TaskRecord]]:
-        # Trigger lazy load so both splits are populated.
-        self.load_records()
-        return native_or_seeded_split(
-            self._train_records,
-            self._test_records,
-            seed=seed,
-            train_frac=train_frac,
-            explicit_train_ids=explicit_train_ids,
-            explicit_test_ids=explicit_test_ids,
-        )
 
     def build_inference_prompt(self, record: TaskRecord) -> str:
         """MCQ prompts already include the choices + instruction; passthrough."""
@@ -220,6 +195,10 @@ class MathQaTaskAdapter(MCQTaskAdapter):
     """
 
     name = "mcq"
+    # See MCQTaskAdapter._SPEC_PREFIX: overriding this is what makes
+    # `dataset_spec` come out as "mathqa:<name>:<split>" via the inherited
+    # __init__ below, without adding a spec_prefix parameter anywhere.
+    _SPEC_PREFIX = "mathqa"
 
     def __init__(
         self,
@@ -228,17 +207,19 @@ class MathQaTaskAdapter(MCQTaskAdapter):
         test_split: str = "test",
         revision: str = "refs/convert/parquet",
     ) -> None:
-        self.dataset_name = dataset_name
-        self.config = None
-        self.train_split = train_split
-        self.test_split = test_split
-        self.revision = revision
-        split_label = (
-            f"{train_split}+{test_split}" if train_split else test_split
+        # MathQA has no dataset-config concept, so `config=None` is passed
+        # explicitly to MCQTaskAdapter.__init__ (whose own default is
+        # "ARC-Challenge"). HFSplitAdapter drops the config segment from
+        # `dataset_spec` whenever config is None, reproducing both the
+        # pre-refactor `self.config = None` and the config-less
+        # "mathqa:<name>:<split>" spec format exactly.
+        super().__init__(
+            dataset_name=dataset_name,
+            config=None,
+            train_split=train_split,
+            test_split=test_split,
         )
-        self.dataset_spec = f"mathqa:{dataset_name}:{split_label}"
-        self._train_records: list[TaskRecord] | None = None
-        self._test_records: list[TaskRecord] | None = None
+        self.revision = revision
 
     def _load_split(self, split: str) -> list[TaskRecord]:
         """Materialise MathQA rows from a single parquet split."""
@@ -304,9 +285,7 @@ def _parse_mathqa_options(raw: object) -> list[tuple[str, str]]:
     for position, marker in enumerate(markers):
         start = marker.end()
         end = (
-            markers[position + 1].start()
-            if position + 1 < len(markers)
-            else len(text)
+            markers[position + 1].start() if position + 1 < len(markers) else len(text)
         )
         body = _MATHQA_STRIP.sub("", text[start:end])
         pairs.append((marker.group(1).upper(), body))
@@ -325,8 +304,7 @@ def _format_mcq_prompt(
     for label, text in zip(labels, texts):
         lines.append(f"  {label}) {text}")
     lines.append(
-        "Respond with only the letter of the correct choice "
-        "(for example ``A``)."
+        "Respond with only the letter of the correct choice (for example ``A``)."
     )
     lines.append("Answer:")
     return "\n".join(lines)

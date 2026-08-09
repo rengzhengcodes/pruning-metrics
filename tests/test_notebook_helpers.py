@@ -54,7 +54,7 @@ def test_wait_for_runner_completion_instance_terminal_fallback() -> None:
 
     with patch("boto3.session.Session", return_value=mock_session):
         with patch(
-            "pruning_metrics.notebook_helpers.describe_instance",
+            "pruning_metrics.notebook_helpers.polling.describe_instance",
             return_value={"State": {"Name": "terminated"}},
         ):
             reason, out = wait_for_runner_completion(

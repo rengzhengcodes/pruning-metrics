@@ -18,7 +18,6 @@ from pruning_metrics.metrics.masks import (
 torch = pytest.importorskip("torch")
 from torch import nn  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -278,7 +277,7 @@ def test_extract_pruning_masks_bfloat16_weights() -> None:
         model.model.layers[0].proj.weight[0, :2] = 0.0
 
     masks = extract_pruning_masks(model)
-    (name, mask), = masks.items()
+    ((name, mask),) = masks.items()
     assert "proj" in name
     assert mask.dtype == np.bool_
     assert mask.shape == (3, 4)

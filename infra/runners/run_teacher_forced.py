@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +39,8 @@ from infra.runners._runner_common import (  # noqa: E402
     load_model_stats_snapshot,
     resolve_eval_defaults,
     run_level_sweep,
+    safe_filename,
+    seeded_task_sample,
     serialise_config,
     split_csv,
     write_json,
@@ -103,9 +104,7 @@ def parse_args() -> argparse.Namespace:
     """CLI for the teacher-forced runner."""
 
     parser = argparse.ArgumentParser(
-        description=(
-            "Teacher-forced next-token log-probabilities per pruning level."
-        )
+        description=("Teacher-forced next-token log-probabilities per pruning level.")
     )
     add_eval_artifact_args(parser)
     parser.add_argument(
@@ -227,7 +226,7 @@ def main() -> int:
             level_dir = (
                 config.output_dir
                 / f"level={level_label(level)}"
-                / f"sample={sample_idx:03d}_task={_safe_filename(record.task_id)}"
+                / f"sample={sample_idx:03d}_task={safe_filename(record.task_id)}"
             )
             level_dir.mkdir(parents=True, exist_ok=True)
             write_teacher_forced_record(tf_record, level_dir / "per_token.json")
@@ -305,29 +304,15 @@ def _select_tf_samples(
             )
         return selected
 
-    # 0 means "score every test record" — sorted for determinism.
-    if config.num_tf_samples == 0:
-        return sorted(test_records, key=lambda r: r.task_id)
-
-    sorted_records = sorted(test_records, key=lambda r: r.task_id)
-    rng = random.Random(config.tf_seed)
-    indices = list(range(len(sorted_records)))
-    rng.shuffle(indices)
-    chosen = [sorted_records[i] for i in indices[: config.num_tf_samples]]
-    if not chosen:
+    # Shared core: sort by task_id, then (unless num_tf_samples == 0, which
+    # selects everything) one seeded index shuffle.
+    chosen = seeded_task_sample(test_records, config.tf_seed, config.num_tf_samples)
+    if config.num_tf_samples and not chosen:
         raise RuntimeError("Teacher-forced sample selection produced 0 records.")
     return chosen
 
 
-def _safe_filename(task_id: str) -> str:
-    """Produce a filesystem-safe slug for a task id."""
-
-    return task_id.replace("/", "_").replace(" ", "_")
-
-
-def _write_run_metadata(
-    config: TeacherForcedConfig, manifest: dict[str, Any]
-) -> None:
+def _write_run_metadata(config: TeacherForcedConfig, manifest: dict[str, Any]) -> None:
     payload = eval_run_metadata(config, manifest, "teacher_forced")
     payload["tf_seed"] = config.tf_seed
     payload["num_tf_samples"] = config.num_tf_samples

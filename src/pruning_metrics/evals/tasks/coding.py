@@ -29,14 +29,13 @@ from pruning_metrics.evals.coding.humaneval_plus_dataset import (
 )
 from pruning_metrics.evals.coding.verifier import verify_task_solution
 from pruning_metrics.evals.tasks.base import (
-    TaskAdapter,
+    HFSplitAdapter,
     TaskRecord,
     VerificationOutcome,
-    native_or_seeded_split,
 )
 
 
-class CodingTaskAdapter(TaskAdapter):
+class CodingTaskAdapter(HFSplitAdapter):
     """Adapter for HumanEval+-shaped coding datasets.
 
     Parameters
@@ -61,6 +60,15 @@ class CodingTaskAdapter(TaskAdapter):
     """
 
     name = "coding"
+    # Design: a private, overridable class attribute rather than a
+    # constructor parameter. MbppTaskAdapter needs a different dataset_spec
+    # prefix ("mbpp") but must not gain a `spec_prefix` argument on its
+    # public __init__. Overriding this attribute lets MbppTaskAdapter reuse
+    # this __init__ verbatim via a plain `super().__init__(...)` call --
+    # `self._SPEC_PREFIX` resolves polymorphically to the subclass's value --
+    # instead of bypassing this __init__ and calling HFSplitAdapter directly
+    # (which pylint flags as non-parent-init-called).
+    _SPEC_PREFIX = "coding"
 
     def __init__(
         self,
@@ -68,54 +76,19 @@ class CodingTaskAdapter(TaskAdapter):
         train_split: str | None = None,
         test_split: str = "test",
     ) -> None:
-        self.dataset_name = dataset_name
-        self.train_split = train_split
-        self.test_split = test_split
-        split_label = (
-            f"{train_split}+{test_split}" if train_split else test_split
+        super().__init__(
+            dataset_name=dataset_name,
+            spec_prefix=self._SPEC_PREFIX,
+            train_split=train_split,
+            test_split=test_split,
         )
-        self.dataset_spec = f"coding:{dataset_name}:{split_label}"
-        self._train_records: list[TaskRecord] | None = None
-        self._test_records: list[TaskRecord] | None = None
 
     def _load_split(self, split: str) -> list[TaskRecord]:
         """Materialise records from a single HumanEval+ split."""
 
-        loader = HumanEvalPlusDatasetLoader(
-            dataset_name=self.dataset_name, split=split
-        )
+        loader = HumanEvalPlusDatasetLoader(dataset_name=self.dataset_name, split=split)
         tasks = loader.load_tasks()
         return [self._to_record(task) for task in tasks]
-
-    def load_records(self) -> list[TaskRecord]:
-        """Concatenate train + test records (train first when available)."""
-
-        if self._test_records is None:
-            self._test_records = self._load_split(self.test_split)
-        if self.train_split is not None and self._train_records is None:
-            self._train_records = self._load_split(self.train_split)
-
-        if self._train_records is not None:
-            return list(self._train_records) + list(self._test_records)
-        return list(self._test_records)
-
-    def train_test_split(
-        self,
-        seed: int = 65320,
-        train_frac: float = 0.8,
-        explicit_train_ids: Sequence[str] | None = None,
-        explicit_test_ids: Sequence[str] | None = None,
-    ) -> tuple[list[TaskRecord], list[TaskRecord]]:
-        # Trigger lazy load so the (single or paired) splits are populated.
-        self.load_records()
-        return native_or_seeded_split(
-            self._train_records,
-            self._test_records,
-            seed=seed,
-            train_frac=train_frac,
-            explicit_train_ids=explicit_train_ids,
-            explicit_test_ids=explicit_test_ids,
-        )
 
     def build_inference_prompt(self, record: TaskRecord) -> str:
         """Wrap the raw HumanEval+ prompt with an instruction.
@@ -224,6 +197,10 @@ class MbppTaskAdapter(CodingTaskAdapter):
     """
 
     name = "coding"
+    # See CodingTaskAdapter._SPEC_PREFIX: overriding this is what makes
+    # `dataset_spec` come out as "mbpp:<name>:<split>" via the inherited
+    # __init__ below, without adding a spec_prefix parameter anywhere.
+    _SPEC_PREFIX = "mbpp"
 
     def __init__(
         self,
@@ -231,15 +208,15 @@ class MbppTaskAdapter(CodingTaskAdapter):
         train_split: str | None = None,
         test_split: str = "test",
     ) -> None:
-        self.dataset_name = dataset_name
-        self.train_split = train_split
-        self.test_split = test_split
-        split_label = (
-            f"{train_split}+{test_split}" if train_split else test_split
+        # Only the dataset_name default differs from CodingTaskAdapter's
+        # public signature, so this still has to be redefined; the body
+        # just forwards to CodingTaskAdapter.__init__ (which resolves
+        # `self._SPEC_PREFIX` to "mbpp" polymorphically, see above).
+        super().__init__(
+            dataset_name=dataset_name,
+            train_split=train_split,
+            test_split=test_split,
         )
-        self.dataset_spec = f"mbpp:{dataset_name}:{split_label}"
-        self._train_records: list[TaskRecord] | None = None
-        self._test_records: list[TaskRecord] | None = None
 
     def _load_split(self, split: str) -> list[TaskRecord]:
         """Materialise MBPP+ rows from a single Hugging Face split."""

@@ -10,9 +10,9 @@ split into two folders:
   instance: shared helpers plus one worker per notebook.
 
 Each of notebooks
-[`02_prune_llm.ipynb`](../notebooks/02_prune_llm.ipynb),
-[`03_freeform_eval.ipynb`](../notebooks/03_freeform_eval.ipynb), and
-[`04_teacher_forced.ipynb`](../notebooks/04_teacher_forced.ipynb)
+[`02_prune_llm.ipynb`](../notebooks/aws_tutorial/02_prune_llm.ipynb),
+[`03_freeform_eval.ipynb`](../notebooks/aws_tutorial/03_freeform_eval.ipynb), and
+[`04_teacher_forced.ipynb`](../notebooks/aws_tutorial/04_teacher_forced.ipynb)
 launches one of the runner scripts here on a spot EC2 instance, polls
 S3 for results, and self-terminates the box when the job is done.
 
@@ -30,10 +30,12 @@ side concerns: capacity probing, monitoring, debugging, recovery.
 | [`provisioning/find_capacity.py`](provisioning/find_capacity.py) | Scans `describe_spot_price_history` + `describe_instance_type_offerings` across regions/AZs for `p5.48xlarge`, `p4de.24xlarge`, `p4d.24xlarge` (or any user-supplied list) and prints the cheapest currently-fulfillable candidates as JSON. The notebooks call this through `pruning_metrics.notebook_helpers.find_capacity`. |
 | [`provisioning/launch_gpu_instance.py`](provisioning/launch_gpu_instance.py) | Tars the repo (excluding `.env`, `.git`, `.venv`, caches), uploads to S3, resolves the latest Deep Learning AMI via SSM Parameter Store, renders [`provisioning/userdata_bootstrap.sh`](provisioning/userdata_bootstrap.sh) with the chosen runner + runner-env, and calls `RunInstances` with the `pruning-metrics-ec2` instance profile + spot market + 1500 GiB gp3 root. |
 | [`provisioning/userdata_bootstrap.sh`](provisioning/userdata_bootstrap.sh) | Cloud-init script. Probes DLAMI conda envs for a python with `torch` pre-installed (falls back to system pip if none), pulls the repo tarball from S3, exports runner-specific env vars, runs the chosen runner, and on exit (success, failure, or spot interruption) syncs results to S3 and shuts down. |
-| [`runners/_runner_common.py`](runners/_runner_common.py) | Shared helpers reused by all three runners: per-row WANDA pruning, snapshot/restore of `nn.Linear` weights to host RAM, S3 sync / download, model loading. The S3 helpers do not import `torch` so the launcher can use them without a GPU env. |
+| [`runners/_runner_common.py`](runners/_runner_common.py) | Shared helpers reused by all five runners: per-row WANDA pruning, snapshot/restore of `nn.Linear` weights to host RAM, S3 sync / download, model loading. The S3 helpers do not import `torch` so the launcher can use them without a GPU env. |
 | [`runners/run_pruning_calibration.py`](runners/run_pruning_calibration.py) | Notebook 2's worker. Loads model once -> WANDA stats over the train split of the chosen calibration dataset -> uploads `wanda_stats.pt` + `manifest.json` + `split.json` + `run_metadata.json`. Fast (~5-25 min). |
 | [`runners/run_freeform_eval.py`](runners/run_freeform_eval.py) | Notebook 3's worker. Downloads the calibration artifact, loads the base model, and per requested pruning level: restore -> apply per-row WANDA -> generate the test split greedily -> task-adapter `verify` -> incremental S3 sync of `level=NN/eval_records.jsonl` and a rolling `summary.json`. |
 | [`runners/run_teacher_forced.py`](runners/run_teacher_forced.py) | Notebook 4's worker. Same artifact + adapter + level sweep, but instead of free-form generation it runs `compute_teacher_forced_logprobs` for `NUM_TF_SAMPLES` records picked deterministically using `TF_SEED`. Outputs `level=NN/sample=KKK_task=.../per_token.json`. |
+| [`runners/run_prune_eval_sweep.py`](runners/run_prune_eval_sweep.py) | Notebook 6's worker (v2 experiment, `06_prune_eval_v2.ipynb`). For one `(pruner, calibration_domain, seed)` grid point in a single self-contained job: loads the model once, prunes to every requested level with WANDA or SparseGPT, saves the resulting pruning mask (full + packed digest) per level, and teacher-forces the same seeded sample of test records from every requested eval benchmark at every level -- output is byte-for-byte compatible with `run_teacher_forced.py`'s `per_token.json`. |
+| [`runners/run_v2_analysis.py`](runners/run_v2_analysis.py) | CPU-only worker behind notebook 7 (`07_diagnosticity.ipynb`). Pulls every run's `per_token.json` / `*.digest.npz` / `summary.json` from S3 into the notebook's local cache, executes the notebook headlessly via `jupyter nbconvert`, and uploads the executed notebook plus `results/v2_*` artifacts back to S3. Needs no GPU. |
 
 The launcher's user-data renders the chosen runner via:
 

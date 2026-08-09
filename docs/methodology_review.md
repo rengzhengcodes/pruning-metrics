@@ -31,7 +31,11 @@ citation.
   free-form pass@1.
 - Four distances are computed on the renormalized top-5 support
   (`src/pruning_metrics/metrics/distributions.py`): KLD, √JSD, 1-D
-  Wasserstein over logprob values ("EMD"), and set-based Chamfer.
+  Wasserstein over logprob values ("EMD"), and set-based Chamfer -- the
+  founding set this review evaluates. *(Update 2026-08-09: sixteen
+  distances now exist, one per module under
+  `src/pruning_metrics/prob_measures/` and re-exported through the
+  `metrics/distributions.py` facade; see the §6 addendum.)*
 - **Analysis A** (`notebooks/experiment/04_metric_spaces.ipynb`): Pearson R²
   between mean per-sample distance and cross-task pass@1 drop.
 - **Analysis B** (`notebooks/experiment/05_tsne.ipynb`): 13×13 pairwise model
@@ -341,6 +345,15 @@ condition, confounded with the 9 missing variants (232/241 completed). (iv)
 statistics select measurably different weights — a necessary condition for
 domain modularity, not proof that the selected weights *causally serve* the
 domain (the localization ≠ editability caveat [13] applies unchanged).
+
+**Addendum (2026-08-09).** Notebook `08_distribution_metrics.ipynb`
+broadened the four founding distances to all sixteen and stress-tested C3's
+criticism of what the four distances actually measure. It found tight
+agreement across all sixteen (Spearman ρ ≥ 0.838 over 360 pairwise
+comparisons, median 0.968), so the choice among them is not load-bearing for
+any v1 or v2 conclusion above. Notebook `09_reducer_sweep.ipynb` then
+crossed every distance against every dimensionality reduction and found the
+reducer choice, not the distance choice, dominates the resulting picture.
 
 ## Appendix A: claims killed by adversarial verification
 

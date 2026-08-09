@@ -139,6 +139,172 @@ class TaskAdapter(Protocol):
         ...
 
 
+class HFSplitAdapter(TaskAdapter):
+    """Shared construction + split-loading machinery for HF-backed adapters.
+
+    :class:`CodingTaskAdapter`, :class:`MbppTaskAdapter`, :class:`MathTaskAdapter`,
+    :class:`MCQTaskAdapter`, and :class:`MathQaTaskAdapter` (see
+    :mod:`pruning_metrics.evals.tasks.coding`, :mod:`pruning_metrics.evals.tasks.math`,
+    and :mod:`pruning_metrics.evals.tasks.mcq`) all load rows from a Hugging
+    Face dataset that exposes an optional native ``train`` split plus a
+    required ``test`` (or only) split, cache the materialised
+    :class:`TaskRecord` lists per split, and hand the pair to
+    :func:`native_or_seeded_split` to produce the calibration/evaluation
+    partition. Before this class existed, that bookkeeping -- constructor
+    state, lazy per-split caching in ``load_records``, and the
+    ``train_test_split`` delegation -- was duplicated nearly byte-for-byte
+    in every adapter's ``__init__``/``load_records``/``train_test_split``.
+    This class factors out exactly that shared behaviour so each subclass
+    only supplies what genuinely differs between datasets: the per-row
+    parsing logic in :meth:`_load_split`, plus (for coding/MCQ tasks)
+    ``build_inference_prompt`` and ``verify``.
+
+    Parameters
+    ----------
+    dataset_name:
+        ``datasets.load_dataset`` name (or dataset id resolved by the
+        subclass's own loader).
+    spec_prefix:
+        Short adapter-family label prepended to :attr:`dataset_spec` (for
+        example ``"coding"``, ``"mbpp"``, ``"math"``, ``"mcq"``,
+        ``"mathqa"``). Kept as an explicit caller-supplied argument rather
+        than reusing ``name`` because two adapter families can share the
+        same ``name`` (``CodingTaskAdapter`` and ``MbppTaskAdapter`` are
+        both ``name = "coding"``) while still needing distinct spec
+        prefixes for the registry's spec-string grammar.
+    train_split:
+        Native Hugging Face split name used for calibration rows, or
+        ``None`` when the dataset ships only one usable split. In that
+        case :meth:`train_test_split` falls back to the seeded 80/20
+        partition of ``test_split`` (see :func:`native_or_seeded_split`).
+    test_split:
+        Native split name loaded for evaluation. Always required.
+    config:
+        Optional Hugging Face dataset config name (``"main"`` for GSM8K,
+        ``"ARC-Challenge"`` for ARC). Adapters with no config concept
+        (HumanEval+, MBPP+, MathQA) pass ``None`` (the default), which
+        also drops the config segment from :attr:`dataset_spec` so the
+        formatted spec string matches the pre-refactor format exactly.
+
+    Notes
+    -----
+    Subclasses MUST override :meth:`_load_split`; the implementation here
+    raises :class:`NotImplementedError` so a forgotten override fails
+    loudly instead of silently returning no records.
+    """
+
+    def __init__(
+        self,
+        *,
+        dataset_name: str,
+        spec_prefix: str,
+        train_split: str | None,
+        test_split: str,
+        config: str | None = None,
+    ) -> None:
+        self.dataset_name = dataset_name
+        self.config = config
+        self.train_split = train_split
+        self.test_split = test_split
+        split_label = f"{train_split}+{test_split}" if train_split else test_split
+        # Design: the pre-refactor adapters formatted `dataset_spec` two
+        # different ways depending on whether they had a `config` concept
+        # (math/MCQ include it in the spec, coding/MBPP/MathQA don't).
+        # Branching on `config is None` reproduces both formats exactly
+        # instead of forcing every caller through one shape.
+        if config is not None:
+            self.dataset_spec = f"{spec_prefix}:{dataset_name}:{config}:{split_label}"
+        else:
+            self.dataset_spec = f"{spec_prefix}:{dataset_name}:{split_label}"
+        self._train_records: list[TaskRecord] | None = None
+        self._test_records: list[TaskRecord] | None = None
+
+    def _load_split(self, split: str) -> list[TaskRecord]:
+        """Materialise records from a single named Hugging Face split.
+
+        This is the one piece of split-loading logic that is genuinely
+        adapter-specific (row schema, entry-point recovery, prompt
+        formatting, ...), so unlike ``load_records``/``train_test_split``
+        it is intentionally NOT shared here -- every concrete subclass
+        must override it.
+
+        Parameters
+        ----------
+        split:
+            Hugging Face split name to load (for example ``"train"`` or
+            ``"test"``).
+
+        Returns
+        -------
+        list[TaskRecord]
+            Normalized records for that split.
+
+        Raises
+        ------
+        NotImplementedError
+            Always, unless a subclass overrides this method.
+        """
+
+        raise NotImplementedError(f"{type(self).__name__} must implement _load_split.")
+
+    def load_records(self) -> list[TaskRecord]:
+        """Concatenate train + test records (train first when available).
+
+        Both splits are loaded at most once and cached on ``self`` (via
+        :meth:`_load_split`), so repeated calls -- including the internal
+        call made by :meth:`train_test_split` -- never re-hit the
+        underlying dataset source.
+
+        Returns
+        -------
+        list[TaskRecord]
+            Just the test split when ``self.train_split is None``,
+            otherwise the train split followed by the test split.
+        """
+
+        if self._test_records is None:
+            self._test_records = self._load_split(self.test_split)
+        if self.train_split is not None and self._train_records is None:
+            self._train_records = self._load_split(self.train_split)
+
+        if self._train_records is not None:
+            return list(self._train_records) + list(self._test_records)
+        return list(self._test_records)
+
+    def train_test_split(
+        self,
+        seed: int = 65320,
+        train_frac: float = 0.8,
+        explicit_train_ids: Sequence[str] | None = None,
+        explicit_test_ids: Sequence[str] | None = None,
+    ) -> tuple[list[TaskRecord], list[TaskRecord]]:
+        """Deterministic partition into ``(train_records, test_records)``.
+
+        Parameters
+        ----------
+        seed, train_frac, explicit_train_ids, explicit_test_ids:
+            Forwarded to :func:`native_or_seeded_split` (which in turn
+            forwards to :func:`deterministic_split` for the seeded
+            fallback path).
+
+        Returns
+        -------
+        tuple[list[TaskRecord], list[TaskRecord]]
+            ``(train_records, test_records)``.
+        """
+
+        # Trigger lazy load so the (single or paired) splits are populated.
+        self.load_records()
+        return native_or_seeded_split(
+            self._train_records,
+            self._test_records,
+            seed=seed,
+            train_frac=train_frac,
+            explicit_train_ids=explicit_train_ids,
+            explicit_test_ids=explicit_test_ids,
+        )
+
+
 def native_or_seeded_split(
     train_records: Sequence[TaskRecord] | None,
     test_records: Sequence[TaskRecord] | None,

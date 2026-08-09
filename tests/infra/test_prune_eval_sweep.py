@@ -19,10 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 # pylint: disable=wrong-import-position
+from infra.runners._runner_common import safe_filename  # noqa: E402
 from infra.runners.run_prune_eval_sweep import (  # noqa: E402
     PruneEvalSweepConfig,
     _build_config,
-    _safe_filename,
     bench_dir,
     build_manifest,
     build_summary_payload,
@@ -33,7 +33,6 @@ from infra.runners.run_prune_eval_sweep import (  # noqa: E402
     select_tf_samples,
 )
 from pruning_metrics.evals.tasks.base import TaskRecord  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # select_calibration_chunk
@@ -232,9 +231,7 @@ def test_build_summary_payload_running_vs_ended() -> None:
         }
     }
 
-    running = build_summary_payload(
-        config, by_level, ended=False, elapsed_seconds=None
-    )
+    running = build_summary_payload(config, by_level, ended=False, elapsed_seconds=None)
     assert running["ended_at_utc"] is None
     assert running["elapsed_seconds"] is None
     assert running["levels"] == by_level
@@ -250,10 +247,10 @@ def test_build_summary_payload_running_vs_ended() -> None:
 
 
 def test_safe_filename_sanitises_slashes_and_spaces() -> None:
-    assert _safe_filename("coding:evalplus/humanevalplus:test") == (
+    assert safe_filename("coding:evalplus/humanevalplus:test") == (
         "coding:evalplus_humanevalplus:test"
     )
-    assert _safe_filename("HumanEval/137 extra") == "HumanEval_137_extra"
+    assert safe_filename("HumanEval/137 extra") == "HumanEval_137_extra"
 
 
 def test_level_dir_layout() -> None:
@@ -272,9 +269,7 @@ def test_bench_dir_layout() -> None:
 def test_sample_dir_layout() -> None:
     out = Path("/opt/results")
     result = sample_dir(out, 20.0, "math", 3, "HumanEval/137")
-    assert result == (
-        out / "level=20" / "bench=math" / "sample=003_task=HumanEval_137"
-    )
+    assert result == (out / "level=20" / "bench=math" / "sample=003_task=HumanEval_137")
 
 
 def test_mask_paths_layout() -> None:

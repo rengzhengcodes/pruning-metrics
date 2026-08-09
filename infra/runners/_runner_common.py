@@ -18,6 +18,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import socket
 import sys
 import time
@@ -25,7 +26,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 LOGGER = logging.getLogger("pruning_runner")
 
@@ -65,6 +66,51 @@ def split_csv(raw: str) -> tuple[str, ...] | None:
     return tuple(token.strip() for token in raw.split(",") if token.strip())
 
 
+def safe_filename(name: str) -> str:
+    """Produce a filesystem-safe slug for a spec or task id."""
+
+    return name.replace("/", "_").replace(" ", "_")
+
+
+def seeded_task_sample(
+    records: Sequence[Any], seed: int, num_samples: int
+) -> list[Any]:
+    """Deterministically sample task records for teacher-forced scoring.
+
+    Shared core of ``run_teacher_forced`` and ``run_prune_eval_sweep`` sample
+    selection. Selection is a pure function of ``(records, seed,
+    num_samples)`` — never of the model, pruner, or level — so every sweep
+    variant scores the identical record set for a given benchmark.
+
+    Parameters
+    ----------
+    records:
+        Task records; each must expose a ``task_id`` attribute.
+    seed:
+        Seed for the single ``random.Random(seed)`` index shuffle.
+    num_samples:
+        ``0`` selects every record (sorted by ``task_id``, no shuffle).
+        ``>= 1`` selects a seeded random sample of that size; slicing past
+        the end returns every available record without error.
+
+    Returns
+    -------
+    list
+        Selected records in a deterministic order.
+    """
+
+    # Sort by task_id first so the base ordering is independent of the
+    # source iteration order; only then apply the seeded shuffle.
+    sorted_records = sorted(records, key=lambda r: r.task_id)
+    if num_samples == 0:
+        return sorted_records
+
+    rng = random.Random(seed)
+    indices = list(range(len(sorted_records)))
+    rng.shuffle(indices)
+    return [sorted_records[i] for i in indices[:num_samples]]
+
+
 # ---------------------------------------------------------------------------
 # Shared CLI arguments
 # ---------------------------------------------------------------------------
@@ -91,9 +137,7 @@ def add_common_runner_args(
         "--results-prefix",
         default=env_or("RESULTS_PREFIX", default=default_results_prefix),
     )
-    parser.add_argument(
-        "--run-id", default=env_or("RUN_ID", default=default_run_id())
-    )
+    parser.add_argument("--run-id", default=env_or("RUN_ID", default=default_run_id()))
 
 
 def add_eval_artifact_args(parser: argparse.ArgumentParser) -> None:
@@ -241,9 +285,7 @@ def download_calibration_artifact(
     LOGGER.info("Downloading manifest %s", f"{base}/manifest.json")
     s3_download_file(f"{base}/manifest.json", artifact_dir / "manifest.json")
     s3_download_file(f"{base}/wanda_stats.pt", artifact_dir / "wanda_stats.pt")
-    manifest = json.loads(
-        (artifact_dir / "manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
     return manifest, artifact_dir
 
 
@@ -269,10 +311,8 @@ def resolve_eval_defaults(
         "eval_levels": parse_pruning_levels(eval_levels_raw),
         "split_seed": int(manifest["split_seed"]),
         "train_frac": float(manifest["train_frac"]),
-        "explicit_train_ids": tuple(manifest.get("explicit_train_ids") or ())
-        or None,
-        "explicit_test_ids": tuple(manifest.get("explicit_test_ids") or ())
-        or None,
+        "explicit_train_ids": tuple(manifest.get("explicit_train_ids") or ()) or None,
+        "explicit_test_ids": tuple(manifest.get("explicit_test_ids") or ()) or None,
     }
 
 
@@ -303,9 +343,7 @@ def s3_destination(bucket: str, prefix: str) -> str:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write ``payload`` as indented JSON (non-serialisable values via ``str``)."""
 
-    path.write_text(
-        json.dumps(payload, indent=2, default=str), encoding="utf-8"
-    )
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
 
 def eval_run_metadata(
@@ -322,9 +360,7 @@ def eval_run_metadata(
         "base_model_id": manifest["base_model_id"],
         "calibration_dataset_spec": manifest["dataset_spec"],
         "eval_dataset_spec": config.eval_dataset_spec,
-        "destination": s3_destination(
-            config.results_bucket, config.results_prefix
-        ),
+        "destination": s3_destination(config.results_bucket, config.results_prefix),
     }
 
 
@@ -351,9 +387,7 @@ def eval_summary_payload(
         "calibration_dataset_spec": manifest["dataset_spec"],
         "eval_dataset_spec": config.eval_dataset_spec,
         **extra,
-        "ended_at_utc": (
-            datetime.now(timezone.utc).isoformat() if ended else None
-        ),
+        "ended_at_utc": (datetime.now(timezone.utc).isoformat() if ended else None),
         "elapsed_seconds": elapsed_seconds,
     }
 
@@ -395,9 +429,7 @@ def run_level_sweep(
             write_summary(ended=False, elapsed_seconds=None)
             sync_results(config)
     finally:
-        write_summary(
-            ended=True, elapsed_seconds=time.monotonic() - started
-        )
+        write_summary(ended=True, elapsed_seconds=time.monotonic() - started)
         sync_results(config)
         LOGGER.info(
             "%s finished. Results: s3://%s/%s/",
@@ -965,9 +997,7 @@ def apply_sparsegpt_pruning(
     from torch import nn
 
     if not calibration_texts:
-        raise ValueError(
-            "calibration_texts must be non-empty for SparseGPT pruning."
-        )
+        raise ValueError("calibration_texts must be non-empty for SparseGPT pruning.")
     if not 0.0 <= prune_ratio < 1.0:
         raise ValueError(f"prune_ratio must be in [0, 1), got {prune_ratio}.")
     if prune_ratio <= 0.0:

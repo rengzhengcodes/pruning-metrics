@@ -81,7 +81,12 @@ def _fake_arc_rows(prefix: str, count: int) -> list[dict[str, object]]:
             "question": f"{prefix} q{i}",
             "choices": {
                 "label": ["A", "B", "C", "D"],
-                "text": [f"{prefix}-w0", f"{prefix}-w1", f"{prefix}-w2", f"{prefix}-w3"],
+                "text": [
+                    f"{prefix}-w0",
+                    f"{prefix}-w1",
+                    f"{prefix}-w2",
+                    f"{prefix}-w3",
+                ],
             },
             "answerKey": "B",
         }

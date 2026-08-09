@@ -174,9 +174,7 @@ class _ToyCausalLM(nn.Module):
     def __init__(self, dim: int, vocab: int, num_layers: int) -> None:
         super().__init__()
         self.embed = nn.Embedding(vocab, dim)
-        self.layers = nn.ModuleList(
-            [_ToyDecoderLayer(dim) for _ in range(num_layers)]
-        )
+        self.layers = nn.ModuleList([_ToyDecoderLayer(dim) for _ in range(num_layers)])
         self.lm_head = nn.Linear(dim, vocab, bias=False)
 
     def forward(self, input_ids: torch.Tensor, attention_mask=None):
@@ -194,7 +192,10 @@ class _StubTokenizer:
         self._vocab = vocab
 
     def __call__(
-        self, text: str, return_tensors: str = "pt", truncation: bool = True,
+        self,
+        text: str,
+        return_tensors: str = "pt",
+        truncation: bool = True,
         max_length: int = 2048,
     ):
         del return_tensors, truncation  # only "pt" tensors are ever needed here
@@ -238,9 +239,9 @@ def test_sequential_driver_prunes_layers_but_not_lm_head() -> None:
     for index, layer in enumerate(model.layers):
         weight = layer.linear.weight.data
         sparsity = (weight == 0).float().mean().item()
-        assert abs(sparsity - prune_ratio) < 0.2, (
-            f"layer {index} sparsity {sparsity} far from target {prune_ratio}"
-        )
+        assert (
+            abs(sparsity - prune_ratio) < 0.2
+        ), f"layer {index} sparsity {sparsity} far from target {prune_ratio}"
 
     assert torch.equal(model.lm_head.weight.detach(), lm_head_before)
 

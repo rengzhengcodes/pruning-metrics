@@ -165,7 +165,11 @@ def _return_code_to_status(return_code: int) -> str:
     Returns
     -------
     str
-        ``pass`` for zero code, otherwise ``fail``.
+        ``"pass"`` for return code ``0``; ``"fail"`` for return code ``1``
+        or ``2``; ``"runtime_error"`` for any other return code.
+        ``"timeout"`` is not produced here -- it is returned earlier by
+        :func:`verify_task_solution` on ``subprocess.TimeoutExpired``,
+        before this function is ever called.
 
     Preconditions
     -------------

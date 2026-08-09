@@ -1,10 +1,10 @@
 # Getting started
 
-A new user on a fresh machine should be able to land on this page and run
-their first pruning sweep in under 30 minutes (small model) or ~1 hour
-(Qwen2-72B). The four numbered notebooks in [`notebooks/`](../notebooks/)
-do all of the heavy orchestration. This page tells you how to get them
-ready to run.
+A new user on a fresh machine should be able to run their first pruning
+sweep in under 30 minutes (small model) or ~1 hour (Qwen2-72B) using this
+page. The four numbered notebooks in
+[`notebooks/aws_tutorial/`](../notebooks/aws_tutorial/) do all of the
+heavy orchestration; this page gets them ready to run.
 
 ## 1. Install Python dependencies
 
@@ -47,7 +47,7 @@ in `.env` is visible to the kernel. `.env` is git-ignored.
 
 ## 4. Run notebook 1 (one-time)
 
-`notebooks/01_setup_aws.ipynb` is idempotent. It:
+`notebooks/aws_tutorial/01_setup_aws.ipynb` is idempotent. It:
 
 * creates the S3 bucket if missing,
 * creates the IAM role + instance profile (`pruning-metrics-ec2`),

@@ -139,7 +139,9 @@ def _sync_cache(
     with concurrent.futures.ThreadPoolExecutor(max_workers=24) as pool:
         for got in pool.map(_fetch, keys, chunksize=16):
             fetched += int(got)
-    LOGGER.info("Cache sync done: %d fetched, %d already present.", fetched, len(keys) - fetched)
+    LOGGER.info(
+        "Cache sync done: %d fetched, %d already present.", fetched, len(keys) - fetched
+    )
     return fetched
 
 
@@ -152,7 +154,13 @@ def _upload_results(bucket: str, results_prefix: str, run_id: str, nb_dir: Path)
     if executed.exists():
         uploads.append(executed)
     results_dir = nb_dir / "results"
-    for pattern in ("v2_pairwise_*", "v2_mask_*", "v2_jaccard*", "v2_*.csv", "v2_*.json"):
+    for pattern in (
+        "v2_pairwise_*",
+        "v2_mask_*",
+        "v2_jaccard*",
+        "v2_*.csv",
+        "v2_*.json",
+    ):
         uploads.extend(results_dir.glob(pattern))
     for path in uploads:
         rel = path.relative_to(nb_dir)
@@ -182,13 +190,21 @@ def main() -> int:
     env["V2_SKIP_SYNC"] = "1"
     LOGGER.info(
         "Executing 07_diagnosticity.ipynb (permutations=%s, benches=%s) ...",
-        args.permutations, benches or "all",
+        args.permutations,
+        benches or "all",
     )
     proc = subprocess.run(
         [
-            sys.executable, "-m", "jupyter", "nbconvert",
-            "--to", "notebook", "--execute", "07_diagnosticity.ipynb",
-            "--output", "07_executed.ipynb",
+            sys.executable,
+            "-m",
+            "jupyter",
+            "nbconvert",
+            "--to",
+            "notebook",
+            "--execute",
+            "07_diagnosticity.ipynb",
+            "--output",
+            "07_executed.ipynb",
             "--ExecutePreprocessor.timeout=-1",
         ],
         cwd=nb_dir,
@@ -197,7 +213,9 @@ def main() -> int:
     )
     LOGGER.info("nbconvert exit code: %s", proc.returncode)
 
-    n_up = _upload_results(args.results_bucket, args.results_prefix, args.run_id, nb_dir)
+    n_up = _upload_results(
+        args.results_bucket, args.results_prefix, args.run_id, nb_dir
+    )
     write_json(
         Path(args.output_dir) / "analysis_metadata.json",
         {

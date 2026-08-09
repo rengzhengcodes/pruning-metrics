@@ -191,9 +191,7 @@ def main() -> int:
         explicit_train_ids=split_csv(args.explicit_train_ids),
         explicit_test_ids=split_csv(args.explicit_test_ids),
         max_calibration_samples=(
-            args.max_calibration_samples
-            if args.max_calibration_samples > 0
-            else None
+            args.max_calibration_samples if args.max_calibration_samples > 0 else None
         ),
         max_calibration_tokens=args.max_calibration_tokens,
         output_dir=Path(args.output_dir),

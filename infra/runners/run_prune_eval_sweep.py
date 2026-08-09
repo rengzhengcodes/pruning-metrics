@@ -51,7 +51,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import random
 import socket
 import sys
 import time
@@ -77,6 +76,8 @@ from infra.runners._runner_common import (  # noqa: E402
     parse_pruning_levels,
     restore_linear_weights,
     s3_destination,
+    safe_filename,
+    seeded_task_sample,
     serialise_config,
     snapshot_linear_weights,
     split_csv,
@@ -333,9 +334,7 @@ def main() -> int:
     config = _build_config(parse_args())
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    LOGGER.info(
-        "Prune-eval-sweep config: %s", json.dumps(serialise_config(config))
-    )
+    LOGGER.info("Prune-eval-sweep config: %s", json.dumps(serialise_config(config)))
     _write_run_metadata(config)
 
     LOGGER.info(
@@ -543,13 +542,16 @@ def select_tf_samples(
 ) -> list[TaskRecord]:
     """Pick the seeded sample of test records teacher-forced per benchmark.
 
-    Mirrors ``run_teacher_forced.py::_select_tf_samples`` exactly (sort by
-    ``task_id`` for a source-order-independent base ordering, then a single
+    Shares the selection core with ``run_teacher_forced.py`` via
+    :func:`_runner_common.seeded_task_sample` (sort by ``task_id`` for a
+    source-order-independent base ordering, then a single
     ``random.Random(tf_seed)`` shuffle) so that every sweep variant --
     every ``(pruner, calibration_domain, calibration_seed, level)``
     combination -- scores the IDENTICAL set of records for a given
     benchmark: selection is a pure function of ``(test_records, tf_seed,
-    num_tf_samples)``, never of the model, pruner, or level.
+    num_tf_samples)``, never of the model, pruner, or level. The public
+    APIs differ (``run_teacher_forced`` also supports explicit task-id
+    lists); only the ordering rule is shared.
 
     Parameters
     ----------
@@ -579,23 +581,10 @@ def select_tf_samples(
     if not test_records:
         raise RuntimeError("Eval test split is empty.")
 
-    sorted_records = sorted(test_records, key=lambda r: r.task_id)
-    if num_tf_samples == 0:
-        return sorted_records
-
-    rng = random.Random(tf_seed)
-    indices = list(range(len(sorted_records)))
-    rng.shuffle(indices)
-    chosen = [sorted_records[i] for i in indices[:num_tf_samples]]
+    chosen = seeded_task_sample(test_records, tf_seed, num_tf_samples)
     if not chosen:
         raise RuntimeError("Teacher-forced sample selection produced 0 records.")
     return chosen
-
-
-def _safe_filename(name: str) -> str:
-    """Filesystem-safe slug for a spec/task id (mirrors ``run_teacher_forced.py``)."""
-
-    return name.replace("/", "_").replace(" ", "_")
 
 
 def level_dir(output_dir: Path, level: float) -> Path:
@@ -607,7 +596,7 @@ def level_dir(output_dir: Path, level: float) -> Path:
 def bench_dir(output_dir: Path, level: float, eval_spec: str) -> Path:
     """``<output_dir>/level=NN/bench=<safe_spec>`` for one benchmark."""
 
-    return level_dir(output_dir, level) / f"bench={_safe_filename(eval_spec)}"
+    return level_dir(output_dir, level) / f"bench={safe_filename(eval_spec)}"
 
 
 def sample_dir(
@@ -616,7 +605,7 @@ def sample_dir(
     """``.../sample=KKK_task=<safe_task>`` for one teacher-forced record."""
 
     return bench_dir(output_dir, level, eval_spec) / (
-        f"sample={sample_idx:03d}_task={_safe_filename(task_id)}"
+        f"sample={sample_idx:03d}_task={safe_filename(task_id)}"
     )
 
 
@@ -736,9 +725,7 @@ def build_summary_payload(
         "tf_seed": config.tf_seed,
         "num_tf_samples": config.num_tf_samples,
         "levels": by_level,
-        "ended_at_utc": (
-            datetime.now(timezone.utc).isoformat() if ended else None
-        ),
+        "ended_at_utc": (datetime.now(timezone.utc).isoformat() if ended else None),
         "elapsed_seconds": elapsed_seconds,
     }
 
@@ -930,9 +917,7 @@ def _evaluate_bench(
 
     elapsed = time.monotonic() - started
     mean_logprob = float(sum(logprobs) / len(logprobs)) if logprobs else None
-    perplexity = (
-        float(math.exp(-mean_logprob)) if mean_logprob is not None else None
-    )
+    perplexity = float(math.exp(-mean_logprob)) if mean_logprob is not None else None
     LOGGER.info(
         "level=%s bench=%s: %d sample(s), mean_logprob=%s, ppl=%s, %.1fs",
         level_label(level),

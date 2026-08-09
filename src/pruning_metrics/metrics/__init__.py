@@ -1,150 +1,57 @@
-"""Distributional distance metrics for comparing token-prediction distributions.
+"""Aggregator package for distance, mask, and embedding-quality diagnostics.
 
-This package provides sixteen distance measures that operate on the per-token
-teacher-forced output stored in ``per_token.json`` files produced by
-:mod:`pruning_metrics.evals.coding.teacher_forcing`.  The four described below
-are the originals, used by notebooks 04, 05 and 07; the other twelve
-(``rkld``, ``jeffreys``, ``tv``, ``hellinger``, ``bhattacharyya``, ``renyi05``,
-``chisq``, ``renyi2``, ``triangular``, ``l2``, ``cosine``, ``wasserstein2``)
-are documented in :mod:`pruning_metrics.metrics.distributions` and compared
-against each other in notebook 08.
+This package holds no logic of its own. It re-exports four sibling
+modules so downstream notebooks and tests have one import surface:
 
-Use :func:`compute_all` rather than a loop over the individual functions when
-more than one measure is wanted: it shares the per-position alignment work, so
-all sixteen cost about as much as one.  :data:`METRIC_INFO` carries the
-family, symmetry, boundedness and formula of each, for tables and axis labels.
-
-Metrics
--------
-KLD
-    Sum of KL(P_base ‖ P_pruned) over all token positions.  Directional
-    (base → pruned); measures how surprised the base-model distribution is
-    by the pruned one.
-JSD
-    Sum of √JSD(P_base, P_pruned) over all token positions.  Symmetric,
-    bounded in [0, 1] per position when computed in log₂ units.
-EMD
-    Sum of Wasserstein-1 distances over all token positions, treating
-    each model's logprob values as 1-D atom positions and renormalised
-    probabilities as weights.
-Chamfer
-    Symmetric Chamfer distance between two *sets* of sparse probability
-    vectors in R^|vocab|.  Each token position contributes one sparse
-    point (the top-5 predictions as non-zero coordinates indexed by
-    token-id).  Unlike the position-aligned metrics above, nearest-
-    neighbour matching is across all positions, capturing geometric
-    similarity of the prediction manifold.
+* **Distributional distances** -- all sixteen measures implemented in
+  :mod:`pruning_metrics.prob_measures` (``compute_kld``, ``compute_jsd``,
+  ``compute_emd``, ``compute_chamfer``, and twelve more), reached here
+  through the backwards-compatible
+  :mod:`pruning_metrics.metrics.distributions` facade. Use
+  :func:`compute_all` rather than looping over the individual functions
+  when more than one measure is wanted: it shares the per-position
+  alignment work, so all sixteen cost about as much as one.
+* **Pruning-mask utilities**, from :mod:`pruning_metrics.metrics.masks`
+  -- extracting per-layer pruning masks (:func:`extract_pruning_masks`),
+  packed digests for cheap storage and comparison
+  (:func:`make_mask_digest`, :class:`PackedDigest`), and pairwise
+  Jaccard distance (:func:`jaccard_distance`,
+  :func:`jaccard_matrix_packed`).
+* **Permutation and cluster statistics**, from
+  :mod:`pruning_metrics.metrics.cluster_stats` -- Mantel and
+  partial-Mantel correlation tests, label-permutation p-values,
+  silhouette scores, and adjusted Rand index (ARI) against known labels.
+* **Embedding-quality diagnostics**, from
+  :mod:`pruning_metrics.metrics.embedding_quality` -- trustworthiness,
+  continuity, Kruskal stress-1, Shepard rho, and the composite
+  :func:`embedding_quality` score used to grade a 2-D reduction (see
+  :mod:`pruning_metrics.dim_reduction`) against the distance matrix it
+  was built from.
 
 Usage
 -----
->>> from pruning_metrics.metrics import compute_kld, compute_jsd, compute_emd, compute_chamfer
->>> kld = compute_kld(tokens_level_0, tokens_level_20)
+>>> from pruning_metrics.metrics import compute_all, jaccard_distance, mantel, trustworthiness
 """
 
 from __future__ import annotations
 
-from pruning_metrics.metrics.cluster_stats import (
-    ari_vs_labels,
-    label_permutation_pvalue,
-    mantel,
-    partial_mantel,
-    silhouette_by_label,
-)
-from pruning_metrics.metrics.embedding_quality import (
-    baseline_distances,
-    continuity,
-    effective_k,
-    embedding_quality,
-    kruskal_stress1,
-    linear_r2,
-    shepard_rho,
-    trustworthiness,
-)
-from pruning_metrics.metrics.distributions import (
-    METRIC_FUNCS,
-    METRIC_INFO,
-    METRIC_NAMES,
-    MetricInfo,
-    TokenStepDict,
-    TopAlternativeDict,
-    compute_all,
-    compute_bhattacharyya,
-    compute_chamfer,
-    compute_chisq,
-    compute_cosine,
-    compute_emd,
-    compute_hellinger,
-    compute_jeffreys,
-    compute_jsd,
-    compute_kld,
-    compute_l2,
-    compute_renyi05,
-    compute_renyi2,
-    compute_rkld,
-    compute_triangular,
-    compute_tv,
-    compute_wasserstein2,
-)
-from pruning_metrics.metrics.masks import (
-    PackedDigest,
-    extract_pruning_masks,
-    jaccard_distance,
-    jaccard_distance_packed,
-    jaccard_matrix_packed,
-    load_digest,
-    load_digest_packed,
-    load_packed_masks,
-    make_mask_digest,
-    save_digest,
-    save_packed_masks,
-)
+from pruning_metrics import prob_measures as _prob_measures
+from pruning_metrics.metrics import cluster_stats as _cluster_stats
+from pruning_metrics.metrics import embedding_quality as _embedding_quality
+from pruning_metrics.metrics import masks as _masks
 
-__all__ = [
-    "compute_kld",
-    "compute_rkld",
-    "compute_jeffreys",
-    "compute_jsd",
-    "compute_tv",
-    "compute_hellinger",
-    "compute_bhattacharyya",
-    "compute_renyi05",
-    "compute_chisq",
-    "compute_renyi2",
-    "compute_triangular",
-    "compute_l2",
-    "compute_cosine",
-    "compute_emd",
-    "compute_wasserstein2",
-    "compute_chamfer",
-    "compute_all",
-    "METRIC_FUNCS",
-    "METRIC_INFO",
-    "METRIC_NAMES",
-    "MetricInfo",
-    "TopAlternativeDict",
-    "TokenStepDict",
-    "extract_pruning_masks",
-    "save_packed_masks",
-    "load_packed_masks",
-    "make_mask_digest",
-    "save_digest",
-    "load_digest",
-    "PackedDigest",
-    "load_digest_packed",
-    "jaccard_distance",
-    "jaccard_distance_packed",
-    "jaccard_matrix_packed",
-    "mantel",
-    "partial_mantel",
-    "silhouette_by_label",
-    "ari_vs_labels",
-    "label_permutation_pvalue",
-    "trustworthiness",
-    "continuity",
-    "kruskal_stress1",
-    "shepard_rho",
-    "embedding_quality",
-    "effective_k",
-    "baseline_distances",
-    "linear_r2",
-]
+# Wildcards mirror each source module's export surface, so a name added to
+# a source's ``__all__`` is available here with no edit to this package.
+from pruning_metrics.metrics.cluster_stats import *
+from pruning_metrics.metrics.embedding_quality import *
+from pruning_metrics.metrics.masks import *
+from pruning_metrics.prob_measures import *
+
+#: Composed from the source modules' ``__all__`` lists; each source owns
+#: its own canonical list, so no name is maintained by hand twice.
+__all__ = (
+    list(_prob_measures.__all__)
+    + list(_masks.__all__)
+    + list(_cluster_stats.__all__)
+    + list(_embedding_quality.__all__)
+)

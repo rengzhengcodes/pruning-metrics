@@ -1,29 +1,46 @@
 # pruning-metrics
 
 Tooling for studying how pruning a large language model degrades its
-behaviour, framed as a metric space over pruning scenarios. The project
+behaviour, framed as a metric space over pruning scenarios: the project
 turns "prune at X% sparsity, evaluate" into a reproducible, seeded,
 notebook-driven workflow that runs on EC2 spot GPUs and persists every
 artifact to S3.
 
 ## What's in here
 
-* **Four orchestration notebooks** in [`notebooks/`](notebooks/) that
-  run the experiment end-to-end without writing any boto3 / argparse
-  scaffolding yourself:
+* **Four orchestration notebooks** in
+  [`notebooks/aws_tutorial/`](notebooks/aws_tutorial/) that run the
+  experiment end-to-end without writing any boto3 / argparse scaffolding
+  yourself:
 
   | Notebook | Purpose |
   |----------|---------|
-  | [`01_setup_aws.ipynb`](notebooks/01_setup_aws.ipynb) | One-time idempotent AWS bootstrap (S3 bucket + IAM role + instance profile). |
-  | [`02_prune_llm.ipynb`](notebooks/02_prune_llm.ipynb) | Compute and upload WANDA calibration stats for any HF causal LM and any task adapter. |
-  | [`03_freeform_eval.ipynb`](notebooks/03_freeform_eval.ipynb) | Free-form (no teacher forcing) per-pruning-level evaluation on a chosen test set. |
-  | [`04_teacher_forced.ipynb`](notebooks/04_teacher_forced.ipynb) | Teacher-forced next-token log-probabilities for seeded test samples per pruning level. |
+  | [`01_setup_aws.ipynb`](notebooks/aws_tutorial/01_setup_aws.ipynb) | One-time idempotent AWS bootstrap (S3 bucket + IAM role + instance profile). |
+  | [`02_prune_llm.ipynb`](notebooks/aws_tutorial/02_prune_llm.ipynb) | Compute and upload WANDA calibration stats for any HF causal LM and any task adapter. |
+  | [`03_freeform_eval.ipynb`](notebooks/aws_tutorial/03_freeform_eval.ipynb) | Free-form (no teacher forcing) per-pruning-level evaluation on a chosen test set. |
+  | [`04_teacher_forced.ipynb`](notebooks/aws_tutorial/04_teacher_forced.ipynb) | Teacher-forced next-token log-probabilities for seeded test samples per pruning level. |
+
+* **A nine-notebook local analysis pipeline** in
+  [`notebooks/experiment/`](notebooks/experiment/) that consumes the
+  artifacts the AWS tutorial notebooks (and the v2 sweep runner) produce --
+  pruning + evaluation collection, metric-space construction, t-SNE /
+  reducer visualization, and the diagnosticity analysis behind this
+  README's "Key finding". Runs locally against cached results; no AWS
+  needed once the artifacts exist.
 
 * **Pluggable task adapters** under
   [`src/pruning_metrics/evals/tasks/`](src/pruning_metrics/evals/tasks/)
-  for HumanEval+ (coding subprocess pass@1), GSM8K (numeric-answer math),
-  and ARC-Challenge (regex letter MCQ). Adding a new task is one file +
-  one registry entry; see [`docs/tasks.md`](docs/tasks.md).
+  for HumanEval+ and MBPP+ (coding subprocess pass@1), GSM8K and MathQA
+  (numeric-answer / MCQ math), and ARC-Challenge (regex letter MCQ).
+  Adding a new task is one file + one registry entry; see
+  [`docs/tasks.md`](docs/tasks.md).
+
+* **Sixteen distributional distances and fourteen dimensionality
+  reducers** in [`src/pruning_metrics/prob_measures/`](src/pruning_metrics/prob_measures/)
+  and [`src/pruning_metrics/dim_reduction/`](src/pruning_metrics/dim_reduction/)
+  respectively, one module per measure / reducer plus a registry each.
+  These back notebooks 08 and 09 in `notebooks/experiment/`, which cross
+  every distance against every reduction.
 
 * **EC2 spot GPU runners** under [`infra/`](infra/): a tarball launcher
   and user-data bootstrap in [`infra/provisioning/`](infra/provisioning/),
@@ -97,7 +114,7 @@ cp template.env .env
 $EDITOR .env  # AWS_PROFILE, AWS_ACCOUNT_ID, RESULTS_BUCKET, BASE_MODEL_ID
 
 # 3. run notebooks 1 -> 4 in order
-jupyter lab notebooks/
+jupyter lab notebooks/aws_tutorial/
 ```
 
 The workstation does not need a GPU or `torch`. Every GPU operation runs
@@ -123,11 +140,9 @@ With pass@1 by sparsity (HumanEval+ test split, seed 65320, 33 tasks):
 
 ## Native dataset splits
 
-Math (GSM8K) and MCQ (ARC-Challenge) adapters use the dataset's native
-``train`` and ``test`` Hub splits by default (GSM8K ``main`` has both; it
-does not define a separate ``validation`` split, and nothing in this repo
-requires one). The seed (`SPLIT_SEED`) is only used to reproducibly
-truncate when `MAX_CALIBRATION_SAMPLES` caps the native train split.
-Coding (HumanEval+) ships a single ``test`` split, so its calibration
-partition still comes from a seeded 80/20 fallback. See
-[`docs/tasks.md`](docs/tasks.md) for the spec grammar.
+Math and MCQ adapters default to native Hub train/test splits; coding
+(HumanEval+) has only one split, so it falls back to a seeded 80/20
+partition. `SPLIT_SEED` also reproducibly truncates the native train
+split when `MAX_CALIBRATION_SAMPLES` caps it. See
+[`docs/tasks.md`](docs/tasks.md#train-test-and-validation-splits) for
+the full split contract and spec grammar.

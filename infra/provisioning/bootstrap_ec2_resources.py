@@ -41,13 +41,8 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-
-SSM_MANAGED_INSTANCE_CORE = (
-    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-)
-CLOUDWATCH_AGENT_SERVER = (
-    "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
-)
+SSM_MANAGED_INSTANCE_CORE = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+CLOUDWATCH_AGENT_SERVER = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 
 
 def parse_args() -> argparse.Namespace:
@@ -150,6 +145,8 @@ def ensure_role_and_profile(
         ARN of the created or existing IAM role.
     """
 
+    # Trust policy: only the EC2 service may assume this role. This is what
+    # lets the instance profile hand temporary credentials to the GPU box.
     trust_policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -176,6 +173,15 @@ def ensure_role_and_profile(
         mutated = True
         print(f"Created IAM role {role['Arn']}")
 
+    # Scope: exactly the actions the runner lifecycle needs, on one bucket.
+    # - GetObject: pull the uploaded repo tarball at boot.
+    # - PutObject: sync results and userdata logs back up.
+    # - DeleteObject: clear stale artifacts when a run id is re-synced.
+    # - ListBucket + GetBucketLocation: bucket-level calls used by
+    #   `aws s3 sync`/`cp` (these apply to the bucket ARN, hence the
+    #   two Resource entries).
+    # - AbortMultipartUpload: large artifacts upload as multipart; abort
+    #   stops interrupted uploads from accruing orphaned-part storage.
     inline_policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -206,9 +212,7 @@ def ensure_role_and_profile(
 
     for managed_arn in (SSM_MANAGED_INSTANCE_CORE, CLOUDWATCH_AGENT_SERVER):
         try:
-            iam_client.attach_role_policy(
-                RoleName=role_name, PolicyArn=managed_arn
-            )
+            iam_client.attach_role_policy(RoleName=role_name, PolicyArn=managed_arn)
         except ClientError as exc:
             if exc.response["Error"]["Code"] != "EntityAlreadyExists":
                 raise

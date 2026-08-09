@@ -10,20 +10,21 @@ which asks the same question at the *behavioral* level). The pipeline is:
    mask bit-for-bit using ``np.packbits`` so a 7B-parameter model's masks fit
    in a manageable ``.npz`` (1 bit/weight instead of numpy's 1 byte/bool).
 3. :func:`make_mask_digest` / :func:`save_digest` / :func:`load_digest` --
-   because comparing *every* weight across 241 model variants is expensive
-   and unnecessary for a diagnostic correlation, draw a small deterministic
-   subsample of each layer's flat mask. Digests from different model variants
-   remain positionally comparable (same seed + fraction + layer shapes select
-   the same coordinates), so they can be Jaccard-compared directly, standing
-   in for the full mask at a fraction of the size/compute.
+   draw a small deterministic subsample of each layer's flat mask. Comparing
+   *every* weight across 241 model variants is expensive, and a diagnostic
+   correlation does not need it. The same seed, fraction, and layer shapes
+   always select the same coordinates, so digests from different model
+   variants stay positionally comparable. They can therefore be
+   Jaccard-compared directly, standing in for the full mask at a fraction
+   of the size and compute.
 4. :func:`jaccard_distance` -- 1 minus Jaccard similarity over retained
    positions; works identically on full masks and digests since both are just
    ``{name: bool_array}`` dicts.
 5. :func:`load_digest_packed` / :func:`jaccard_distance_packed` /
    :func:`jaccard_matrix_packed` -- the same distance computed without ever
    unpacking to ``bool``. :func:`load_digest` costs 8 bits of memory per
-   1-bit-of-information position, which is fine for a handful of digests and
-   ruinous for a pairwise matrix over hundreds of variants; the packed path
+   1-bit-of-information position. That is fine for a handful of digests and
+   ruinous for a pairwise matrix over hundreds of variants. The packed path
    keeps the on-disk packing and counts bits with ``np.bitwise_count``.
 
 Notes
@@ -46,6 +47,20 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
+
+__all__ = [
+    "extract_pruning_masks",
+    "save_packed_masks",
+    "load_packed_masks",
+    "make_mask_digest",
+    "save_digest",
+    "load_digest",
+    "PackedDigest",
+    "load_digest_packed",
+    "jaccard_distance_packed",
+    "jaccard_matrix_packed",
+    "jaccard_distance",
+]
 
 # ---------------------------------------------------------------------------
 # Extraction

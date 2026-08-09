@@ -38,6 +38,14 @@ from scipy.stats import rankdata
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_rand_score, silhouette_score
 
+__all__ = [
+    "mantel",
+    "partial_mantel",
+    "silhouette_by_label",
+    "ari_vs_labels",
+    "label_permutation_pvalue",
+]
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -79,9 +87,7 @@ def _validate_square_symmetric(mat: np.ndarray, name: str) -> np.ndarray:
     """
     arr = np.asarray(mat, dtype=np.float64)
     if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
-        raise ValueError(
-            f"{name} must be a square 2-D matrix, got shape {arr.shape}"
-        )
+        raise ValueError(f"{name} must be a square 2-D matrix, got shape {arr.shape}")
     asymmetry = np.abs(arr - arr.T)
     max_asymmetry = float(asymmetry.max()) if arr.size else 0.0
     if max_asymmetry > _SYMMETRY_TOL:
@@ -225,7 +231,9 @@ def mantel(
     d1 = _validate_square_symmetric(d1, "d1")
     d2 = _validate_square_symmetric(d2, "d2")
     if d1.shape != d2.shape:
-        raise ValueError(f"d1 and d2 must have the same shape, got {d1.shape} vs {d2.shape}")
+        raise ValueError(
+            f"d1 and d2 must have the same shape, got {d1.shape} vs {d2.shape}"
+        )
 
     n = d1.shape[0]
     upper_1 = _upper_triangle(d1)

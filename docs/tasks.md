@@ -122,13 +122,15 @@ of the longer spec shapes) without any other changes.
 
 Each adapter's spec parser is one-line in
 [`registry.py`](../src/pruning_metrics/evals/tasks/registry.py); the
-project ships three:
+project ships five:
 
 | Adapter | Spec grammar | Default behaviour |
 |---------|--------------|-------------------|
 | `coding` | `coding[:<dataset>[:<test_split>]]` | HumanEval+, single test split, seeded 80/20 fallback for calibration. |
 | `math` | `math[:<dataset>[:<config>[:<train_split>[:<test_split>]]]]` | Defaults to `math:gsm8k:main:train:test` (native splits). Pass `""` for `train_split` to force the seeded fallback. |
 | `mcq` | `mcq[:<dataset>[:<config>[:<train_split>[:<test_split>]]]]` | Defaults to `mcq:allenai/ai2_arc:ARC-Challenge:train:test` (native splits). |
+| `mbpp` | `mbpp[:<dataset>[:<test_split>]]` | MBPP+ (`evalplus/mbppplus`), single test split, seeded 80/20 fallback for calibration -- mirrors the `coding` grammar. A `CodingTaskAdapter` subclass that reconstructs the missing `prompt`, `entry_point`, and `check` fields MBPP+ doesn't ship natively. |
+| `mathqa` | `mathqa[:<dataset>[:<train_split>[:<test_split>]]]` | Defaults to `mathqa:allenai/math_qa:train:test` (native splits, read from the script-free parquet mirror). Pass `""` for `train_split` to force the seeded fallback. A `MCQTaskAdapter` subclass that parses MathQA's free-text options string into ARC-shaped `(LETTER, text)` choices. |
 
 Examples:
 
@@ -137,20 +139,22 @@ build_adapter_from_spec("coding")                                # HumanEval+
 build_adapter_from_spec("math:gsm8k:main")                       # GSM8K native splits
 build_adapter_from_spec("math:gsm8k:main::test")                 # GSM8K test only -> seeded fallback
 build_adapter_from_spec("mcq:allenai/ai2_arc:ARC-Challenge")     # ARC native splits
+build_adapter_from_spec("mbpp")                                  # MBPP+
+build_adapter_from_spec("mathqa")                                # MathQA native splits
 ```
 
 ## Train, test, and validation splits
 
 GSM8K (`gsm8k`, config `main`) and ARC-Challenge expose Hub splits named
-`train` and `test` by default; neither ships a separate `validation` split
+`train` and `test` by default. Neither ships a separate `validation` split
 on those configs, and the built-in adapters **never** assume one exists.
 Calibration rows come from `train_split` (default `"train"`) and
 evaluation rows from `test_split` (default `"test"`). If you point
 `MathTaskAdapter` or `MCQTaskAdapter` at another dataset that only has
-`train` + `test`, keep the defaults; if a dataset adds `validation` and
-you want to calibrate on it, pass that split name explicitly when
-constructing the adapter (or extend the spec parser). Datasets with only a
-single public split should set `train_split=None` so the seeded fallback
+`train` + `test`, keep the defaults. If a dataset adds `validation` and you
+want to calibrate on it, pass that split name explicitly when constructing
+the adapter (or extend the spec parser). Datasets with only a single
+public split should set `train_split=None` so the seeded fallback
 partitions that split (same pattern as HumanEval+).
 
 ## Two flavours of "prompt"
@@ -163,11 +167,12 @@ when concatenated.
 `build_inference_prompt(record)` returns the **free-form inference
 prompt** -- the runner feeds this to `model.generate` and the model's
 decoded output is what the verifier sees. Most tasks include any required
-instruction text in `record.prompt`; the coding adapter is the exception
-because the canonical solution is a function body that needs to follow
-the partial `def` (no instruction wrapper) for teacher forcing, but the
-free-form prompt needs an instruction "return only Python code defining
-`<entry_point>`" so the verifier can find a complete callable.
+instruction text directly in `record.prompt`. The coding adapter is the
+exception: its canonical solution is a function body, so teacher forcing
+needs `record.prompt` to end in the partial `def` with no instruction
+wrapper. The free-form prompt instead needs an instruction -- "return
+only Python code defining `<entry_point>`" -- so the verifier can find a
+complete callable.
 
 ## Status values
 

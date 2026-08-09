@@ -25,15 +25,13 @@ fractions written as ``a/b``; the helper normalises all of those to a single
 from __future__ import annotations
 
 import re
-from typing import Sequence
 
 from datasets import load_dataset
 
 from pruning_metrics.evals.tasks.base import (
-    TaskAdapter,
+    HFSplitAdapter,
     TaskRecord,
     VerificationOutcome,
-    native_or_seeded_split,
 )
 
 _GSM8K_GOLD_DIVIDER = "####"
@@ -42,7 +40,7 @@ _GSM_DIVIDER_PATTERN = re.compile(r"####\s*(-?[0-9.,/]+)")
 _NUMBER_PATTERN = re.compile(r"-?\$?\s*[0-9][0-9,]*(?:\.[0-9]+)?(?:/[0-9]+)?")
 
 
-class MathTaskAdapter(TaskAdapter):
+class MathTaskAdapter(HFSplitAdapter):
     """GSM8K (and GSM8K-shaped) math word problems.
 
     Parameters
@@ -76,17 +74,14 @@ class MathTaskAdapter(TaskAdapter):
         test_split: str = "test",
         keep_chain_of_thought: bool = True,
     ) -> None:
-        self.dataset_name = dataset_name
-        self.config = config
-        self.train_split = train_split
-        self.test_split = test_split
-        self.keep_chain_of_thought = keep_chain_of_thought
-        split_label = (
-            f"{train_split}+{test_split}" if train_split else test_split
+        super().__init__(
+            dataset_name=dataset_name,
+            spec_prefix="math",
+            config=config,
+            train_split=train_split,
+            test_split=test_split,
         )
-        self.dataset_spec = f"math:{dataset_name}:{config}:{split_label}"
-        self._train_records: list[TaskRecord] | None = None
-        self._test_records: list[TaskRecord] | None = None
+        self.keep_chain_of_thought = keep_chain_of_thought
 
     def _load_split(self, split: str) -> list[TaskRecord]:
         """Materialise rows from a single Hugging Face split."""
@@ -102,7 +97,9 @@ class MathTaskAdapter(TaskAdapter):
                 # in GSM8K but defensive.
                 continue
             target_text = (
-                answer_full if self.keep_chain_of_thought else f"{_GSM8K_GOLD_DIVIDER} {answer_full.split(_GSM8K_GOLD_DIVIDER)[-1].strip()}"
+                answer_full
+                if self.keep_chain_of_thought
+                else f"{_GSM8K_GOLD_DIVIDER} {answer_full.split(_GSM8K_GOLD_DIVIDER)[-1].strip()}"
             )
             records.append(
                 TaskRecord(
@@ -117,36 +114,6 @@ class MathTaskAdapter(TaskAdapter):
                 )
             )
         return records
-
-    def load_records(self) -> list[TaskRecord]:
-        """Concatenate train + test records (train first when available)."""
-
-        if self._test_records is None:
-            self._test_records = self._load_split(self.test_split)
-        if self.train_split is not None and self._train_records is None:
-            self._train_records = self._load_split(self.train_split)
-
-        if self._train_records is not None:
-            return list(self._train_records) + list(self._test_records)
-        return list(self._test_records)
-
-    def train_test_split(
-        self,
-        seed: int = 65320,
-        train_frac: float = 0.8,
-        explicit_train_ids: Sequence[str] | None = None,
-        explicit_test_ids: Sequence[str] | None = None,
-    ) -> tuple[list[TaskRecord], list[TaskRecord]]:
-        # Trigger lazy load so both splits are populated.
-        self.load_records()
-        return native_or_seeded_split(
-            self._train_records,
-            self._test_records,
-            seed=seed,
-            train_frac=train_frac,
-            explicit_train_ids=explicit_train_ids,
-            explicit_test_ids=explicit_test_ids,
-        )
 
     def build_inference_prompt(self, record: TaskRecord) -> str:
         """Math prompts already include the GSM-style instruction; passthrough."""

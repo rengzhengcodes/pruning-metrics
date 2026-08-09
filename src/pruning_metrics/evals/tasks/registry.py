@@ -28,7 +28,6 @@ from pruning_metrics.evals.tasks.coding import CodingTaskAdapter, MbppTaskAdapte
 from pruning_metrics.evals.tasks.math import MathTaskAdapter
 from pruning_metrics.evals.tasks.mcq import MathQaTaskAdapter, MCQTaskAdapter
 
-
 TASK_REGISTRY: Mapping[str, Callable[..., TaskAdapter]] = {
     "coding": CodingTaskAdapter,
     "math": MathTaskAdapter,
@@ -69,9 +68,7 @@ def build_adapter(name: str, **kwargs: Any) -> TaskAdapter:
     """
 
     if name not in _ALL_ADAPTERS:
-        raise KeyError(
-            f"Unknown task adapter {name!r}. Known: {sorted(_ALL_ADAPTERS)}"
-        )
+        raise KeyError(f"Unknown task adapter {name!r}. Known: {sorted(_ALL_ADAPTERS)}")
     return _ALL_ADAPTERS[name](**kwargs)
 
 
@@ -117,9 +114,7 @@ def build_adapter_from_spec(spec: str) -> TaskAdapter:
     parts = spec.split(":")
     name = parts[0]
     if name not in _ALL_ADAPTERS:
-        raise KeyError(
-            f"Unknown task adapter {name!r}. Known: {sorted(_ALL_ADAPTERS)}"
-        )
+        raise KeyError(f"Unknown task adapter {name!r}. Known: {sorted(_ALL_ADAPTERS)}")
 
     if name in ("coding", "mbpp"):
         kwargs: dict[str, Any] = {}

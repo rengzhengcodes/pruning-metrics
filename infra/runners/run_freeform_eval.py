@@ -117,9 +117,7 @@ def parse_args() -> argparse.Namespace:
     """CLI for the free-form eval runner."""
 
     parser = argparse.ArgumentParser(
-        description=(
-            "Free-form evaluation against a pruning calibration artifact."
-        )
+        description=("Free-form evaluation against a pruning calibration artifact.")
     )
     add_eval_artifact_args(parser)
     parser.add_argument(
@@ -314,9 +312,7 @@ def _evaluate_level(
                     pad_token_id=pad_token_id,
                 )
             new_tokens = outputs[0, prompt_len:]
-            generated_text = tokenizer.decode(
-                new_tokens, skip_special_tokens=True
-            )
+            generated_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
             outcome = adapter.verify(
                 record,
                 generated_text,

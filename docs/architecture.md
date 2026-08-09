@@ -88,18 +88,40 @@ Trade-offs:
 ```
 pruning-metrics/
 ├── notebooks/
-│   ├── 01_setup_aws.ipynb            # one-time AWS bootstrap
-│   ├── 02_prune_llm.ipynb            # produces wanda_stats.pt + manifest
-│   ├── 03_freeform_eval.ipynb        # greedy generation + verifier per level
-│   └── 04_teacher_forced.ipynb       # per-token log-probs per level
+│   ├── aws_tutorial/                 # 4-notebook AWS orchestration tutorial
+│   │   ├── 01_setup_aws.ipynb        # one-time AWS bootstrap
+│   │   ├── 02_prune_llm.ipynb        # produces wanda_stats.pt + manifest
+│   │   ├── 03_freeform_eval.ipynb    # greedy generation + verifier per level
+│   │   └── 04_teacher_forced.ipynb   # per-token log-probs per level
+│   └── experiment/                   # 9-notebook local analysis pipeline
+│       ├── 01_prune_all.ipynb        # v1: prune Qwen2-72B across 3 calibration domains
+│       ├── 02_eval_all.ipynb         # v1: teacher-forced + free-form eval per variant
+│       ├── 03_collect_results.ipynb  # assemble per-run results into tables
+│       ├── ...
+│       ├── 07_diagnosticity.ipynb    # v2 stratified diagnosticity analysis
+│       ├── 08_distribution_metrics.ipynb  # cross-compares all 16 distances
+│       └── 09_reducer_sweep.ipynb    # 16 distances x 14 reducers, full cross product
 ├── src/pruning_metrics/
 │   ├── notebook_helpers.py           # find_capacity / launch_runner / poll loops
+│   ├── dim_reduction/                # 14 dimensionality reducers, one module each + registry
+│   │   ├── base.py                   # SPEC / fit contract shared by every reducer
+│   │   ├── tsne.py, umap.py, isomap.py, pca.py, ...  # one module per algorithm
+│   │   └── registry.py               # REDUCERS / embed_2d()
+│   ├── prob_measures/                # 16 distributional distances, one module each + registry
+│   │   ├── base.py                   # per-module contract, shared representation notes
+│   │   ├── kld.py, jsd.py, emd.py, chamfer.py, ...  # one module per measure
+│   │   └── registry.py               # METRIC_FUNCS / METRIC_INFO / compute_all()
+│   ├── metrics/                      # aggregator: re-exports the two packages above + mask/cluster stats
+│   │   ├── masks.py                  # pruning-mask extraction, digests, Jaccard distance
+│   │   ├── cluster_stats.py          # Mantel, ARI, silhouette, permutation tests
+│   │   ├── embedding_quality.py      # trustworthiness, continuity, stress, Shepard rho
+│   │   └── distributions.py          # backwards-compatible facade over prob_measures
 │   └── evals/
-│       ├── tasks/                    # TaskAdapter contract + 3 concrete adapters
+│       ├── tasks/                    # TaskAdapter contract + 5 concrete adapters
 │       │   ├── base.py               # Protocol, TaskRecord, native_or_seeded_split
-│       │   ├── coding.py             # HumanEval+ adapter (seeded 80/20 fallback)
+│       │   ├── coding.py             # HumanEval+ + MBPP+ adapters (seeded 80/20 fallback)
 │       │   ├── math.py               # GSM8K numeric-answer adapter (native splits)
-│       │   ├── mcq.py                # ARC-Challenge regex-letter adapter (native splits)
+│       │   ├── mcq.py                # ARC-Challenge + MathQA adapters (native splits)
 │       │   └── registry.py           # build_adapter_from_spec()
 │       └── coding/                   # HumanEval+ loader, verifier, TF helper
 │           ├── humaneval_plus_dataset.py
@@ -111,13 +133,15 @@ pruning-metrics/
 │   │   ├── find_capacity.py          # spot-price probe
 │   │   ├── launch_gpu_instance.py    # tarball + AMI + RunInstances
 │   │   └── userdata_bootstrap.sh     # cloud-init template
-│   └── runners/                      # executed on the GPU instance
-│       ├── _runner_common.py         # WANDA + S3 helpers shared by 3 runners
+│   └── runners/                      # executed on the GPU (or CPU) instance
+│       ├── _runner_common.py         # WANDA + S3 helpers shared by all 5 runners
 │       ├── run_pruning_calibration.py# notebook 2's worker
 │       ├── run_freeform_eval.py      # notebook 3's worker
-│       └── run_teacher_forced.py     # notebook 4's worker
+│       ├── run_teacher_forced.py     # notebook 4's worker
+│       ├── run_prune_eval_sweep.py   # notebook 6's worker (v2 prune + eval sweep)
+│       └── run_v2_analysis.py        # notebook 7's worker (CPU diagnosticity analysis)
 ├── scripts/
-│   └── build_notebooks.py            # regenerates the 4 notebooks
+│   └── build_notebooks.py            # regenerates the 4 notebooks in notebooks/aws_tutorial/
 ├── docs/                             # this folder
 └── tests/                            # pytest suite
 ```
@@ -167,14 +191,13 @@ Every random source is seeded:
 * `torch.manual_seed` on every generation step (`GENERATION_SEED`);
 * the teacher-forced sample selection (`TF_SEED`).
 
-For datasets with native train + test splits (GSM8K, ARC), the partition
-itself is **not** randomised -- it follows the Hugging Face row order and
-ignores `SPLIT_SEED` / `TRAIN_FRAC`. Those benchmarks' default Hub configs
-expose ``train`` and ``test`` only (no separate ``validation`` split); the
-task adapters never assume a ``validation`` key exists. `split.json` records
-the full ordered task-id partition either way for review. All runner-side
-seeds are forwarded via env vars and recorded in `run_metadata.json` next to
-the artifacts.
+Native-split datasets (GSM8K, ARC) keep the Hugging Face row order for
+the partition itself and ignore `SPLIT_SEED` / `TRAIN_FRAC`; see
+[`docs/tasks.md`](tasks.md#train-test-and-validation-splits) for the full
+native-vs-seeded split contract. `split.json` records the full ordered
+task-id partition either way for review. All runner-side seeds are
+forwarded via env vars and recorded in `run_metadata.json` next to the
+artifacts.
 
 ## Where to extend
 
@@ -190,11 +213,7 @@ the artifacts.
 
 ## Cost & wall-clock reference (May 2026 prices)
 
-| Phase | Box | Wall clock (Qwen2-72B) | Wall clock (Qwen2-1.5B) | Cost |
-|------:|-----|-----------------------:|------------------------:|-----:|
-| Notebook 1 | none | ~10 s | ~10 s | $0 |
-| Notebook 2 | `g5.xlarge` (1.5B) / `p4de.24xlarge` (72B) | ~25 min | ~6 min | ~$0.07 / $5 |
-| Notebook 3 | same | ~30 min for 33-task eval x 5 levels | ~7 min | ~$0.10 / $7 |
-| Notebook 4 | same | ~5 min for 1 sample x 5 levels | ~5 min | ~$0.07 / $1 |
-
-Spot prices fluctuate; `find_capacity.py` always reports a fresh quote.
+The full Qwen2-72B sweep across notebooks 2-4 costs ~$25 of spot GPU time
+(a small-model smoke pass is well under $0.50); see
+[infra/README.md](../infra/README.md#cost--wall-clock-reference-may-2026-prices)
+for the phase-by-phase wall-clock and price breakdown.
