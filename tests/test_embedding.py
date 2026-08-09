@@ -163,8 +163,25 @@ def test_complete_submatrix_of_all_zeros_is_empty_or_singleton() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_registry_covers_the_five_documented_reducers() -> None:
-    assert set(REDUCERS) == {"pca", "tsne", "umap", "isomap", "lle"}
+def test_registry_covers_every_documented_reducer() -> None:
+    assert set(REDUCERS) == {
+        # distance-native
+        "tsne",
+        "umap",
+        "isomap",
+        "mds",
+        "nmds",
+        "spectral",
+        # coordinate-requiring (classical MDS runs first)
+        "pca",
+        "lle",
+        "lle_modified",
+        "lle_hessian",
+        "ltsa",
+        "kpca_rbf",
+        "ica",
+        "random",
+    }
 
 
 def test_registry_entries_are_self_consistent() -> None:
@@ -174,10 +191,24 @@ def test_registry_entries_are_self_consistent() -> None:
         assert spec.title
 
 
-def test_only_pca_and_lle_need_coordinates() -> None:
-    """The distinction that decides whether classical MDS is applied first."""
+def test_needs_coords_matches_the_precomputed_capable_algorithms() -> None:
+    """The distinction that decides whether classical MDS is applied first.
+
+    Anything with a ``metric="precomputed"`` (or ``dissimilarity``/``affinity``)
+    mode consumes D directly; everything else is fed coordinates, and pays the
+    lossy double-centering step for it.
+    """
     needs = {k for k, s in REDUCERS.items() if s.needs_coords}
-    assert needs == {"pca", "lle"}
+    assert needs == {
+        "pca",
+        "lle",
+        "lle_modified",
+        "lle_hessian",
+        "ltsa",
+        "kpca_rbf",
+        "ica",
+        "random",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +303,7 @@ def test_overrides_take_precedence_over_defaults() -> None:
 
 def test_unknown_reducer_raises() -> None:
     with pytest.raises(KeyError, match="unknown reducer"):
-        embed_2d(_gaussian_D(n=10, seed=18), "mds")
+        embed_2d(_gaussian_D(n=10, seed=18), "not_a_reducer")
 
 
 def test_non_square_matrix_raises() -> None:
@@ -292,3 +323,130 @@ def test_non_finite_matrix_raises() -> None:
     D[0, 1] = D[1, 0] = np.nan
     with pytest.raises(ValueError, match="non-finite"):
         embed_2d(D, "pca")
+
+
+# ---------------------------------------------------------------------------
+# The nine reducers added for the full metric x reducer sweep
+# ---------------------------------------------------------------------------
+
+
+def test_spectral_affinity_inverts_distance() -> None:
+    """The trap this helper exists to avoid: SpectralEmbedding wants a
+    similarity, and handing it a distance matrix silently inverts the geometry
+    so that the nearest points get the smallest weights."""
+    from pruning_metrics.embedding import _spectral_affinity
+
+    D = _gaussian_D(n=12, seed=31)
+    affinity, sigma = _spectral_affinity(D, None)
+
+    assert np.allclose(np.diag(affinity), 1.0)
+    assert ((affinity >= 0.0) & (affinity <= 1.0)).all()
+    # Monotone decreasing in distance: the closest pair outranks the furthest.
+    iu = np.triu_indices_from(D, k=1)
+    near, far = np.argmin(D[iu]), np.argmax(D[iu])
+    assert affinity[iu][near] > affinity[iu][far]
+    assert sigma > 0.0
+
+
+def test_spectral_bandwidth_defaults_to_the_median_distance() -> None:
+    from pruning_metrics.embedding import _spectral_affinity
+
+    D = _gaussian_D(n=12, seed=32)
+    off = D[~np.eye(12, dtype=bool)]
+    _, sigma = _spectral_affinity(D, None)
+    assert sigma == pytest.approx(float(np.median(off[off > 0])))
+
+
+def test_spectral_records_the_effective_bandwidth() -> None:
+    D = _gaussian_D(n=14, seed=33)
+    _, info = embed_2d(D, "spectral")
+    assert info["params"]["bandwidth"] > 0.0
+
+
+def test_spectral_bandwidth_is_scale_adaptive() -> None:
+    """These metrics differ by twelve orders of magnitude, so a fixed sigma
+    would disconnect the graph on some of them and saturate it on others.
+    Scaling D must leave the embedding's rank structure alone."""
+    D = _gaussian_D(n=14, seed=34)
+    from pruning_metrics.metrics.embedding_quality import shepard_rho
+
+    plain, _ = embed_2d(D, "spectral")
+    scaled, _ = embed_2d(D * 1e6, "spectral")
+    assert shepard_rho(D, plain) == pytest.approx(shepard_rho(D, scaled), abs=0.02)
+
+
+def test_hessian_lle_neighbourhood_floor_is_enforced() -> None:
+    """sklearn requires n_neighbors > n_components*(n_components+3)/2 and
+    raises otherwise; a caller passing a smaller value should get a working
+    embedding and an honest record of what was actually used."""
+    D = _gaussian_D(n=20, seed=35)
+    coords, info = embed_2d(D, "lle_hessian", n_neighbors=3)
+    assert coords.shape == (20, 2)
+    assert info["params"]["n_neighbors"] > 2 * (2 + 3) // 2
+
+
+def test_mds_variants_record_their_stress() -> None:
+    D = _gaussian_D(n=16, seed=36)
+    for reducer in ("mds", "nmds"):
+        _, info = embed_2d(D, reducer, n_init=1, max_iter=60)
+        assert info["stress"] >= 0.0
+        assert info["n_iter"] >= 1
+
+
+def test_metric_mds_beats_classical_mds_on_stress() -> None:
+    """The reason to carry SMACOF alongside PCA-on-classical-MDS: it minimises
+    Kruskal stress directly instead of discarding negative eigenvalues."""
+    from pruning_metrics.metrics.embedding_quality import kruskal_stress1
+
+    D = _gaussian_D(n=24, seed=37)
+    smacof, _ = embed_2d(D, "mds")
+    classical, _ = embed_2d(D, "pca")
+    assert kruskal_stress1(D, smacof)[0] <= kruskal_stress1(D, classical)[0] + 1e-9
+
+
+def test_kernel_pca_gamma_is_set_from_the_data_when_unspecified() -> None:
+    D = _gaussian_D(n=15, seed=38)
+    _, info = embed_2d(D, "kpca_rbf")
+    assert info["params"]["gamma"] > 0.0
+    _, pinned = embed_2d(D, "kpca_rbf", gamma=0.5)
+    assert pinned["params"]["gamma"] == 0.5
+
+
+def test_ica_whitens_to_unit_variance() -> None:
+    """What actually distinguishes the ica row from the pca row. A rotation
+    cannot change pairwise distances, so ICA's unmixing is invisible to every
+    quality score in this repository; the whitening is not."""
+    D = _gaussian_D(n=30, seed=39)
+    coords, _ = embed_2d(D, "ica")
+    assert np.allclose(coords.var(axis=0), 1.0, atol=0.15)
+
+
+def test_random_projection_is_the_control_and_is_reproducible() -> None:
+    D = _gaussian_D(n=25, seed=40)
+    first, _ = embed_2d(D, "random", random_state=7)
+    second, _ = embed_2d(D, "random", random_state=7)
+    other, _ = embed_2d(D, "random", random_state=8)
+    assert np.array_equal(first, second)
+    assert not np.array_equal(first, other)
+
+
+def test_random_projection_roughly_preserves_distances() -> None:
+    """Johnson-Lindenstrauss in miniature. This is why the control is not a
+    straw man: a random projection is already a mediocre embedding, so a
+    reducer only earns its place by beating it."""
+    from pruning_metrics.metrics.embedding_quality import shepard_rho
+
+    D = _gaussian_D(n=40, seed=41)
+    coords, _ = embed_2d(D, "random", random_state=3)
+    assert shepard_rho(D, coords) > 0.3
+
+
+def test_every_reducer_survives_a_wildly_scaled_matrix() -> None:
+    """The chi-squared matrices run to ~1e13 while total variation stays below
+    1. A sweep over all sixteen measures hits both, so no reducer may depend on
+    D being order 1."""
+    D = _gaussian_D(n=18, seed=42) * 1e12
+    for reducer in REDUCERS:
+        coords, _ = embed_2d(D, reducer)
+        assert coords.shape == (18, 2), reducer
+        assert np.isfinite(coords).all(), reducer

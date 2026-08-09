@@ -250,6 +250,87 @@ REDUCERS: dict[str, ReducerSpec] = {
         needs_coords=True,
         defaults={"n_neighbors": 15, "method": "standard"},
     ),
+    "mds": ReducerSpec(
+        key="mds",
+        title="Metric MDS (SMACOF)",
+        needs_coords=False,
+        # The iterative stress-minimising cousin of classical MDS: instead of
+        # eigendecomposing the double-centered matrix it directly minimises
+        # Kruskal stress, so it is not forced to discard negative eigenvalues
+        # and can fit a non-Euclidean D that classical MDS mangles.
+        defaults={"n_init": 4, "max_iter": 300},
+    ),
+    "nmds": ReducerSpec(
+        key="nmds",
+        title="Non-metric MDS",
+        needs_coords=False,
+        # Fits an arbitrary monotone transform of the distances rather than the
+        # distances themselves. It therefore optimises for exactly what Shepard
+        # rho measures, and is the fair comparison for any claim that a
+        # neighbour-graph method "preserves ordering".
+        defaults={"metric": False, "n_init": 4, "max_iter": 300},
+    ),
+    "spectral": ReducerSpec(
+        key="spectral",
+        title="Laplacian eigenmaps",
+        needs_coords=False,
+        # Needs an affinity, not a distance. exp(-(d/sigma)^2) with sigma from
+        # the median heuristic (see _spectral_affinity) is the standard choice;
+        # the effective sigma is recorded in the returned info.
+        defaults={"bandwidth": None},
+    ),
+    "kpca_rbf": ReducerSpec(
+        key="kpca_rbf",
+        title="Kernel PCA (RBF)",
+        needs_coords=True,
+        # Kernel PCA with a linear kernel on double-centered coordinates is
+        # classical MDS exactly; the RBF kernel is what makes this a distinct
+        # algorithm rather than a second name for the pca row.
+        defaults={"kernel": "rbf", "gamma": None},
+    ),
+    "lle_modified": ReducerSpec(
+        key="lle_modified",
+        title="Modified LLE",
+        needs_coords=True,
+        defaults={"n_neighbors": 15, "method": "modified", "eigen_solver": "dense"},
+    ),
+    "lle_hessian": ReducerSpec(
+        key="lle_hessian",
+        title="Hessian LLE",
+        needs_coords=True,
+        # Hessian eigenmapping requires n_neighbors > n_components*(n_components+3)/2,
+        # i.e. > 5 at n_components=2; embed_2d raises the value if a caller
+        # lowers it below that.
+        defaults={"n_neighbors": 15, "method": "hessian", "eigen_solver": "dense"},
+    ),
+    "ltsa": ReducerSpec(
+        key="ltsa",
+        title="Local tangent space alignment",
+        needs_coords=True,
+        defaults={"n_neighbors": 15, "method": "ltsa", "eigen_solver": "dense"},
+    ),
+    "ica": ReducerSpec(
+        key="ica",
+        title="FastICA",
+        needs_coords=True,
+        # Read this row carefully: a rotation cannot change pairwise distances,
+        # so ICA's *unmixing* is invisible to every quality score here. What
+        # separates this from the pca row is FastICA's whitening, which gives
+        # both output axes unit variance. Its scores are "equal-variance PCA"
+        # scores, and the gap between the two rows is the cost of throwing away
+        # the relative scale of the first two components.
+        defaults={"max_iter": 2000, "whiten": "unit-variance"},
+    ),
+    "random": ReducerSpec(
+        key="random",
+        title="Gaussian random projection",
+        needs_coords=True,
+        # The control. Johnson-Lindenstrauss says a random projection preserves
+        # distances in expectation, so this is the empirical noise floor: any
+        # reducer that does not beat this row has bought nothing with its
+        # algorithm. A single draw at the given random_state, not an average.
+        defaults={},
+    ),
 }
 
 
@@ -282,6 +363,42 @@ def _connected_n_neighbors(D: np.ndarray, n_neighbors: int) -> int:
             return k
         k += 1
     return max(k, 1)
+
+
+def _spectral_affinity(
+    D: np.ndarray, bandwidth: float | None
+) -> tuple[np.ndarray, float]:
+    """Turn a distance matrix into an RBF affinity for Laplacian eigenmaps.
+
+    ``SpectralEmbedding(affinity="precomputed")`` wants a *similarity*, and
+    feeding it a distance matrix silently inverts the geometry — near points get
+    the smallest weights. The conversion is ``exp(-(d/sigma)^2)``, and sigma
+    matters: too small and the graph disconnects, too large and every point is
+    equally similar.
+
+    Parameters
+    ----------
+    D:
+        Square symmetric distance matrix.
+    bandwidth:
+        Sigma to use, or ``None`` for the median heuristic — the median of the
+        non-zero off-diagonal distances, which puts the typical pair at
+        ``exp(-1)`` and adapts automatically to measures whose scales differ by
+        twelve orders of magnitude.
+
+    Returns
+    -------
+    affinity, sigma:
+        The affinity matrix and the bandwidth actually used.
+    """
+    off = D[~np.eye(D.shape[0], dtype=bool)]
+    off = off[off > 0]
+    sigma = (
+        float(bandwidth) if bandwidth else float(np.median(off)) if off.size else 1.0
+    )
+    if not np.isfinite(sigma) or sigma <= 0:
+        sigma = 1.0
+    return np.exp(-((D / sigma) ** 2)), sigma
 
 
 def embed_2d(
@@ -407,16 +524,86 @@ def embed_2d(
         coords = model.fit_transform(X)
         info["versions"]["sklearn"] = sklearn.__version__
 
-    elif reducer == "lle":
+    elif reducer in ("lle", "lle_modified", "lle_hessian", "ltsa"):
         import sklearn
         from sklearn.manifold import LocallyLinearEmbedding
 
         effective["n_neighbors"] = min(effective["n_neighbors"], X.shape[0] - 1)
+        if effective["method"] == "hessian":
+            # sklearn requires n_neighbors > n_components*(n_components+3)/2.
+            floor = n_components * (n_components + 3) // 2 + 1
+            effective["n_neighbors"] = max(effective["n_neighbors"], floor)
+        elif effective["method"] == "ltsa":
+            effective["n_neighbors"] = max(effective["n_neighbors"], n_components + 1)
         model = LocallyLinearEmbedding(
             n_components=n_components, random_state=random_state, **effective
         )
         coords = model.fit_transform(X)
         info["reconstruction_error"] = float(model.reconstruction_error_)
+        info["versions"]["sklearn"] = sklearn.__version__
+
+    elif reducer in ("mds", "nmds"):
+        import sklearn
+        from sklearn.manifold import MDS
+
+        model = MDS(
+            n_components=n_components,
+            dissimilarity="precomputed",
+            random_state=random_state,
+            normalized_stress=False,
+            **effective,
+        )
+        coords = model.fit_transform(X)
+        info["stress"] = float(model.stress_)
+        info["n_iter"] = int(model.n_iter_)
+        info["versions"]["sklearn"] = sklearn.__version__
+
+    elif reducer == "spectral":
+        import sklearn
+        from sklearn.manifold import SpectralEmbedding
+
+        affinity, sigma = _spectral_affinity(D, effective.pop("bandwidth", None))
+        effective["bandwidth"] = sigma
+        model = SpectralEmbedding(
+            n_components=n_components,
+            affinity="precomputed",
+            random_state=random_state,
+        )
+        coords = model.fit_transform(affinity)
+        info["versions"]["sklearn"] = sklearn.__version__
+
+    elif reducer == "kpca_rbf":
+        import sklearn
+        from sklearn.decomposition import KernelPCA
+
+        if effective.get("gamma") is None:
+            # 1 / (2 * total variance) puts the typical squared distance at
+            # order 1 in the exponent, whatever scale the metric works in.
+            spread = float(np.var(X, axis=0).sum())
+            effective["gamma"] = 1.0 / (2.0 * spread) if spread > 0 else 1.0
+        model = KernelPCA(n_components=n_components, **effective)
+        coords = model.fit_transform(X)
+        info["versions"]["sklearn"] = sklearn.__version__
+
+    elif reducer == "ica":
+        import sklearn
+        from sklearn.decomposition import FastICA
+
+        model = FastICA(
+            n_components=n_components, random_state=random_state, **effective
+        )
+        coords = model.fit_transform(X)
+        info["n_iter"] = int(getattr(model, "n_iter_", 0))
+        info["versions"]["sklearn"] = sklearn.__version__
+
+    elif reducer == "random":
+        import sklearn
+        from sklearn.random_projection import GaussianRandomProjection
+
+        model = GaussianRandomProjection(
+            n_components=n_components, random_state=random_state, **effective
+        )
+        coords = model.fit_transform(X)
         info["versions"]["sklearn"] = sklearn.__version__
 
     else:  # pragma: no cover - guarded by the REDUCERS membership check above

@@ -57,14 +57,26 @@ python3 .claude/skills/run-pruning-metrics/driver.py aws-check   # read-only STS
 `notebooks/experiment/results/v2_embedding_figures/`
 regenerate in place with fresh mtimes; open one to confirm it rendered.
 
-**Dimensionality reduction lives in two places.** `05_tsne.ipynb` runs all five
-reducers (PCA, t-SNE, UMAP, Isomap, LLE) over the **v1** 13×13 matrices;
-`07_diagnosticity.ipynb` §7 runs the same five over the **v2** 232-variant
-matrices and additionally scores each embedding (trustworthiness, continuity,
-Kruskal stress-1, Shepard ρ) into `results/v2_embedding_quality.csv`. The shared
-math is in `src/pruning_metrics/embedding.py` and
+**`REDUCERS` holds fourteen reducers, not five.** `05_tsne.ipynb` and
+`07_diagnosticity.ipynb` §7 still use only the original five (PCA, t-SNE, UMAP,
+Isomap, LLE) — 05 over the **v1** 13×13 matrices, 07 over the **v2** 232-variant
+ones with quality scores into `results/v2_embedding_quality.csv`. The other nine
+(`mds`, `nmds`, `spectral`, `kpca_rbf`, `lle_modified`, `lle_hessian`, `ltsa`,
+`ica`, `random`) are exercised by **`09_reducer_sweep.ipynb`**, which runs the
+full distance × reducer cross product. The shared math is in
+`src/pruning_metrics/embedding.py` and
 `src/pruning_metrics/metrics/embedding_quality.py` — both unit-tested, so prefer
 changing those over editing notebook cells.
+
+Two reducer rows are not candidates and must not be read as such:
+`random` (Gaussian random projection) is the **control** — the empirical noise
+floor a real reducer has to beat — and `ica` differs from `pca` only by
+FastICA's whitening, because a rotation cannot change any pairwise distance and
+therefore cannot change any score in this repository. Eight of the fourteen have
+no `metric="precomputed"` mode and are fed `classical_mds_coords(D)`, which
+silently discards the negative eigenvalues; always score an embedding against
+the **original** `D`, never against those coordinates, or a coords-based reducer
+gets graded on its own preprocessed input.
 
 **There are sixteen distributional distances, not four.**
 `src/pruning_metrics/metrics/distributions.py` defines the original
@@ -95,6 +107,7 @@ Notebook execution matrix (all verified):
 | `notebooks/experiment/04_metric_spaces.ipynb` | yes, read-only S3 (9 small summary.json + listings; run `aws-check` first) | ~6.5 min | `results/metric_space_*.csv`, pairwise `.npy` caches |
 | `notebooks/experiment/07_diagnosticity.ipynb` | only to sync new runs — set `V2_SKIP_SYNC=1` to run purely off the local cache | **~25 min** on the one cached benchmark; **hours** if it has to build matrices (see below) | `results/v2_embedding_figures/`, `results/v2_embedding_quality.csv`, `results/v2_embeddings/`, `results/v2_jaccard.npy` |
 | `notebooks/experiment/08_distribution_metrics.ipynb` | no — fully cache-local | **~4.5 min** cold (builds 36 matrices), **~50 s** once cached | `results/metric_family_figures/`, `results/metric_{scale_audit,mds_spectrum,agreement,family_r2}.csv`, 36 new `pairwise_dist_*.npy` |
+| `notebooks/experiment/09_reducer_sweep.ipynb` | no — fully cache-local | **~4.5 min** (952 embeddings; `V1_ONLY=1` cuts it to ~40 s) | `results/sweep_figures/`, `results/reducer_sweep_{v1,v2}.csv` |
 | `notebooks/experiment/01–03`, `notebooks/aws_tutorial/01–04` | yes — **launches paid GPU spot instances** (01/02) | hours | S3 |
 
 Never execute the GPU-launching notebooks headlessly. They call EC2
